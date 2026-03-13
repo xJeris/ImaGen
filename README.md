@@ -109,7 +109,7 @@ Weights above 1.0 increase emphasis, below 1.0 decrease it.
 3. Set duration (1–5 seconds at 16fps)
 4. Click **Generate**
 
-Videos are exported as MP4. The 1.3B Lite model generates in seconds; the 14B Full model takes minutes but produces higher quality.
+Videos are exported as MP4. The 1.3B Lite model generates in ~2-3 minutes; the 14B Full model takes longer but produces higher quality.
 
 ### Hires Fix
 
@@ -206,3 +206,4 @@ ImaGen/
 ## License
 
 This project is provided as-is for personal and educational use.
+

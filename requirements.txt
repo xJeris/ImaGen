@@ -1,0 +1,14 @@
+diffusers>=0.31.0
+transformers>=4.40.0
+accelerate>=1.0.0
+safetensors>=0.4.0
+compel>=2.0.0
+gradio>=5.0.0
+Pillow>=10.0.0
+peft>=0.13.0
+datasets>=3.0.0
+spandrel>=0.4.0
+numpy>=1.24.0
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
+bitsandbytes>=0.43.0

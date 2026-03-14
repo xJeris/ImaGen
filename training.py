@@ -65,6 +65,11 @@ class LoRATrainer:
 
         Returns the path to the saved LoRA file.
         """
+        if self.pipe is None:
+            raise ValueError("No model loaded. Please load a model before training.")
+        if not hasattr(self.pipe, 'text_encoder_2'):
+            raise ValueError("LoRA training requires an SDXL model. SD 1.5 is not supported.")
+
         # Prepare dataset
         dataset = TrainingImageDataset(image_dir)
         if len(dataset) == 0:

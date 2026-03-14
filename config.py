@@ -35,8 +35,8 @@ DEFAULT_SEED = -1
 # Prompt defaults (loaded from text files)
 _pos_file = PROJECT_ROOT / "default_positive.txt"
 _neg_file = PROJECT_ROOT / "default_negative.txt"
-DEFAULT_POSITIVE = _pos_file.read_text(encoding="utf-8").strip() if _pos_file.exists() else ""
-DEFAULT_NEGATIVE = _neg_file.read_text(encoding="utf-8").strip() if _neg_file.exists() else ""
+DEFAULT_POSITIVE = " ".join(_pos_file.read_text(encoding="utf-8").split()) if _pos_file.exists() else ""
+DEFAULT_NEGATIVE = " ".join(_neg_file.read_text(encoding="utf-8").split()) if _neg_file.exists() else ""
 
 # Training defaults
 LORA_RANK = 4

@@ -64,6 +64,7 @@ class ImageGenerator:
         self._active_loras = []
         self._model_type = None
         self._model_name = None
+        self._is_single_file = False
         self._interrupt = False
 
     def get_available_models(self):
@@ -147,9 +148,6 @@ class ImageGenerator:
         self.pipe.scheduler = EulerDiscreteScheduler.from_config(
             self.pipe.scheduler.config
         )
-
-        # Ensure VAE runs in float32 for numerical stability during decode
-        self.pipe.vae.to(torch.float32)
 
         # Move to device and optimize
         self.pipe.to(config.DEVICE)
@@ -361,6 +359,8 @@ class ImageGenerator:
 
         self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
         self.pipe.fuse_lora(adapter_names=adapter_names)
+        # Fusing LoRAs can upcast weights to float32; cast everything back
+        self.pipe.to(dtype=torch.float16)
         self._active_loras = list(lora_list)
 
     def unload_loras(self):
@@ -514,7 +514,7 @@ class ImageGenerator:
         self.set_scheduler(scheduler_name)
 
         source_image = source_image.convert("RGB")
-        mask_image = mask_image.convert("RGB")
+        mask_image = mask_image.convert("L")
 
         parsed_pos = parse_weighted_prompt(positive_prompt)
         parsed_neg = parse_weighted_prompt(negative_prompt) if negative_prompt else ""

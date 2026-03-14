@@ -22,6 +22,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 - **LoRA Training** — Train your own LoRA on custom images directly from the UI
 - **Hires Fix** — Two-pass generation: base render → AI upscale → img2img refinement for sharper detail
 - **AI Upscalers** — Post-process upscaling with Real-ESRGAN, SwinIR, ESRGAN, and other models via [Spandrel](https://github.com/chaiNNer-org/spandrel)
+- **Prompt Profiles** — Save and load prompt presets (positive + negative) across all tabs
 - **Multiple Samplers** — Euler, Euler Ancestral, DPM++ 2M Karras, DPM++ SDE Karras, DDIM, UniPC
 - **Hot-Swap Models** — Switch between models from the UI without restarting
 - **Fully Offline** — After first-run model download, everything runs locally
@@ -134,6 +135,17 @@ A two-pass approach for high-resolution detail:
 
 Enable it under the **Hires Fix** accordion in the Text to Image tab.
 
+### Prompt Profiles
+
+Save and reuse prompt combinations across sessions:
+
+1. Click the **Save** (💾) or **Load** (📂) icon on any tab to open the profiles panel
+2. **Save** — enter a name (letters and numbers, max 30 characters) and click Save to store the current positive and negative prompts
+3. **Load** — select a profile from the dropdown and click Load to apply it to all tabs
+4. **Delete** — remove a saved profile (the "default" profile clears its contents instead of being removed)
+
+Profiles are stored as text files in the `profiles/` folder. You can also create profiles manually by placing `{name}_positive.txt` and `{name}_negative.txt` files there.
+
 ### Training LoRA
 
 1. Prepare a folder of training images (optionally with `.txt` caption files)
@@ -190,6 +202,7 @@ ImaGen/
 ├── start.bat               # Windows launcher
 ├── default_positive.txt    # Default positive prompt
 ├── default_negative.txt    # Default negative prompt
+├── profiles/               # Saved prompt profiles
 ├── models/                 # Base models (image + video)
 │   └── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
 ├── upscalers/              # Upscaler model files

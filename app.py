@@ -76,6 +76,116 @@ def shutdown_app():
     return "Shutting down..."
 
 
+_profiles_dir = config.PROJECT_ROOT / "profiles"
+
+
+def list_profiles():
+    """Scan profiles/ folder and return list of profile names.
+    Also includes 'default' if root-level default_positive.txt exists."""
+    _profiles_dir.mkdir(exist_ok=True)
+    names = set()
+    # Check for root-level default files
+    if (config.PROJECT_ROOT / "default_positive.txt").exists():
+        names.add("default")
+    for f in _profiles_dir.glob("*_positive.txt"):
+        names.add(f.name.replace("_positive.txt", ""))
+    return sorted(names) if names else []
+
+
+def _profile_paths(name):
+    """Return (pos_path, neg_path) for a profile name."""
+    if name == "default":
+        return (
+            config.PROJECT_ROOT / "default_positive.txt",
+            config.PROJECT_ROOT / "default_negative.txt",
+        )
+    return (
+        _profiles_dir / f"{name}_positive.txt",
+        _profiles_dir / f"{name}_negative.txt",
+    )
+
+
+def save_profile(name, positive, negative):
+    """Save positive and negative prompts to profiles/{name}_*.txt."""
+    if not name or not name.strip():
+        gr.Warning("Please enter a profile name.")
+        return gr.update()
+    import re
+    name = name.strip()
+    # Sanitize: only letters, numbers; max 30 characters
+    name = re.sub(r'[^a-zA-Z0-9]', '', name)[:30]
+    if not name:
+        gr.Warning("Profile name must contain letters or numbers only.")
+        return gr.update()
+    _profiles_dir.mkdir(exist_ok=True)
+    pos_path, neg_path = _profile_paths(name)
+    pos_path.write_text(positive, encoding="utf-8")
+    neg_path.write_text(negative, encoding="utf-8")
+    gr.Info(f"Profile '{name}' saved.")
+    return gr.update(choices=list_profiles(), value=name)
+
+
+def load_profile(name):
+    """Load a profile and return (positive, negative) x 4 tabs = 8 outputs."""
+    if not name:
+        gr.Warning("No profile selected.")
+        return (gr.update(),) * 8
+    pos_path, neg_path = _profile_paths(name)
+    pos = " ".join(pos_path.read_text(encoding="utf-8").split()) if pos_path.exists() else ""
+    neg = " ".join(neg_path.read_text(encoding="utf-8").split()) if neg_path.exists() else ""
+    gr.Info(f"Profile '{name}' loaded.")
+    return (pos, neg) * 4
+
+
+def delete_profile(name):
+    """Delete a profile's files. Default profile gets emptied instead of removed."""
+    if not name:
+        gr.Warning("No profile selected.")
+        return gr.update()
+    if name == "default":
+        # Clear contents but keep files so "default" always exists
+        pos_path, neg_path = _profile_paths("default")
+        pos_path.write_text("", encoding="utf-8")
+        neg_path.write_text("", encoding="utf-8")
+        gr.Info("Default profile cleared.")
+        return gr.update(choices=list_profiles(), value=None)
+    (_profiles_dir / f"{name}_positive.txt").unlink(missing_ok=True)
+    (_profiles_dir / f"{name}_negative.txt").unlink(missing_ok=True)
+    gr.Info(f"Profile '{name}' deleted.")
+    return gr.update(choices=list_profiles(), value=None)
+
+
+def _build_prompt(positive_prompt, description):
+    """Build the full positive prompt from positive + description. Raises gr.Error if empty."""
+    full = positive_prompt.strip()
+    if description.strip():
+        full = f"{full}, {description.strip()}"
+    if not full:
+        raise gr.Error("Please enter a prompt.")
+    return full
+
+
+def _apply_loras(gen, lora1_name, lora1_weight, lora2_name, lora2_weight):
+    """Build LoRA list from two slots and apply to the given generator."""
+    lora_list = []
+    if lora1_name and lora1_name != "None":
+        lora_list.append((str(config.LORA_DIR / lora1_name), lora1_weight))
+    if lora2_name and lora2_name != "None":
+        lora_list.append((str(config.LORA_DIR / lora2_name), lora2_weight))
+    if lora_list:
+        gen.load_loras(lora_list)
+    else:
+        gen.unload_loras()
+
+
+def _resolve_seed(seed):
+    """Return a concrete seed value; randomize if negative."""
+    actual = int(seed)
+    if actual < 0:
+        actual = torch.randint(0, 2**32, (1,)).item()
+    return actual
+
+
 def _apply_upscaler(image, upscaler_name):
     """Apply upscaler to image if one is selected."""
     if upscaler_name and upscaler_name != "None":
@@ -92,27 +202,9 @@ def generate_image(
 ):
     global _last_image
 
-    full_prompt = positive_prompt.strip()
-    if description.strip():
-        full_prompt = f"{full_prompt}, {description.strip()}"
-
-    if not full_prompt:
-        raise gr.Error("Please enter a prompt.")
-
-    # Build LoRA list
-    lora_list = []
-    if lora1_name and lora1_name != "None":
-        lora_list.append((str(config.LORA_DIR / lora1_name), lora1_weight))
-    if lora2_name and lora2_name != "None":
-        lora_list.append((str(config.LORA_DIR / lora2_name), lora2_weight))
-    if lora_list:
-        generator.load_loras(lora_list)
-    else:
-        generator.unload_loras()
-
-    actual_seed = int(seed)
-    if actual_seed < 0:
-        actual_seed = torch.randint(0, 2**32, (1,)).item()
+    full_prompt = _build_prompt(positive_prompt, description)
+    _apply_loras(generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
+    actual_seed = _resolve_seed(seed)
 
     image = generator.generate(
         positive_prompt=full_prompt,
@@ -199,27 +291,9 @@ def img2img_generate(
 ):
     global _last_image
 
-    full_prompt = positive_prompt.strip()
-    if description.strip():
-        full_prompt = f"{full_prompt}, {description.strip()}"
-
-    if not full_prompt:
-        raise gr.Error("Please enter a prompt.")
-
-    # Build LoRA list
-    lora_list = []
-    if lora1_name and lora1_name != "None":
-        lora_list.append((str(config.LORA_DIR / lora1_name), lora1_weight))
-    if lora2_name and lora2_name != "None":
-        lora_list.append((str(config.LORA_DIR / lora2_name), lora2_weight))
-    if lora_list:
-        generator.load_loras(lora_list)
-    else:
-        generator.unload_loras()
-
-    actual_seed = int(seed)
-    if actual_seed < 0:
-        actual_seed = torch.randint(0, 2**32, (1,)).item()
+    full_prompt = _build_prompt(positive_prompt, description)
+    _apply_loras(generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
+    actual_seed = _resolve_seed(seed)
 
     if inpaint_enabled:
         # Inpainting mode — extract image and mask from editor
@@ -349,29 +423,11 @@ def video_generate(
     if video_generator.pipe is None:
         raise gr.Error("Please select and load a video model first.")
 
-    full_prompt = positive_prompt.strip()
-    if description.strip():
-        full_prompt = f"{full_prompt}, {description.strip()}"
-
-    if not full_prompt:
-        raise gr.Error("Please enter a prompt.")
-
-    # Build LoRA list
-    lora_list = []
-    if lora1_name and lora1_name != "None":
-        lora_list.append((str(config.LORA_DIR / lora1_name), lora1_weight))
-    if lora2_name and lora2_name != "None":
-        lora_list.append((str(config.LORA_DIR / lora2_name), lora2_weight))
-    if lora_list:
-        video_generator.load_loras(lora_list)
-    else:
-        video_generator.unload_loras()
+    full_prompt = _build_prompt(positive_prompt, description)
+    _apply_loras(video_generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
 
     num_frames = DURATION_TO_FRAMES.get(int(duration), 49)
-
-    actual_seed = int(seed)
-    if actual_seed < 0:
-        actual_seed = torch.randint(0, 2**32, (1,)).item()
+    actual_seed = _resolve_seed(seed)
 
     yield None, "Generating frames..."
 
@@ -385,7 +441,7 @@ def video_generate(
         scheduler_name=sampler,
     )
 
-    if video_generator.was_interrupted or not frames:
+    if video_generator.was_interrupted or frames is None:
         yield None, "Generation stopped."
         return
 
@@ -474,27 +530,10 @@ def anim_generate(
     if source_image is None:
         raise gr.Error("Please upload a source image.")
 
-    full_prompt = positive_prompt.strip()
-    if description.strip():
-        full_prompt = f"{full_prompt}, {description.strip()}"
+    full_prompt = _build_prompt(positive_prompt, description)
+    _apply_loras(animatediff_generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
 
-    if not full_prompt:
-        raise gr.Error("Please enter a prompt.")
-
-    # Build LoRA list
-    lora_list = []
-    if lora1_name and lora1_name != "None":
-        lora_list.append((str(config.LORA_DIR / lora1_name), lora1_weight))
-    if lora2_name and lora2_name != "None":
-        lora_list.append((str(config.LORA_DIR / lora2_name), lora2_weight))
-    if lora_list:
-        animatediff_generator.load_loras(lora_list)
-    else:
-        animatediff_generator.unload_loras()
-
-    actual_seed = int(seed)
-    if actual_seed < 0:
-        actual_seed = torch.randint(0, 2**32, (1,)).item()
+    actual_seed = _resolve_seed(seed)
 
     yield None, "Generating frames..."
 
@@ -510,7 +549,7 @@ def anim_generate(
         scheduler_name=sampler,
     )
 
-    if animatediff_generator.was_interrupted or not frames:
+    if animatediff_generator.was_interrupted or frames is None:
         yield None, "Generation stopped."
         return
 
@@ -582,6 +621,12 @@ div.gradio-container {
     font-size: 0.85rem;
     margin-top: 0 !important;
 }
+#imagen-header p:last-of-type {
+    opacity: 0.35;
+    font-size: 0.72rem;
+    margin-top: 0.3rem !important;
+    letter-spacing: 0.02em;
+}
 
 /* ── Tabs ── */
 .tab-nav button {
@@ -623,14 +668,6 @@ button.primary:hover {
 button.stop {
     font-weight: 600 !important;
     transition: all 0.2s ease !important;
-}
-
-/* ── Image / Video output area ── */
-.image-container, .video-container {
-    border-radius: 12px !important;
-    overflow: hidden;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3) !important;
-    border: 1px solid rgba(255, 255, 255, 0.06) !important;
 }
 
 /* ── Input fields ── */
@@ -704,7 +741,120 @@ button.secondary:hover {
 #shutdown-btn:hover::after {
     opacity: 1;
 }
+
+/* ── Profile icon buttons ── */
+.profile-btn {
+    position: relative;
+    min-width: 36px !important;
+    max-width: 36px !important;
+    height: 36px !important;
+    padding: 0 !important;
+    font-size: 1.1rem !important;
+    border-radius: 6px !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    background: transparent !important;
+    cursor: pointer;
+}
+.profile-btn:hover {
+    border-color: rgba(96, 165, 250, 0.4) !important;
+    background: rgba(96, 165, 250, 0.08) !important;
+}
+.profile-btn::after {
+    position: absolute;
+    bottom: -1.8rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    z-index: 10;
+}
+.profile-btn:hover::after {
+    opacity: 1;
+}
+#profile-save-btn::after, #i2i-profile-save-btn::after,
+#vid-profile-save-btn::after, #anim-profile-save-btn::after { content: "Save profile"; }
+#profile-load-btn::after, #i2i-profile-load-btn::after,
+#vid-profile-load-btn::after, #anim-profile-load-btn::after { content: "Load profile"; }
+
+/* Prompts label row alignment */
+[id$="-prompts-label"] {
+    flex-grow: 1 !important;
+    margin: auto 0 !important;
+    padding: 0 !important;
+}
+[id$="-prompts-label"] p {
+    margin: 0 !important;
+}
+
+/* ── Profile panel ── */
+#profile-panel {
+    border: 1px solid rgba(96, 165, 250, 0.15) !important;
+    border-radius: 8px !important;
+    padding: 0.8rem !important;
+    background: rgba(30, 41, 59, 0.4) !important;
+    margin-bottom: 0.5rem !important;
+}
 """
+
+
+def _get_system_stats():
+    """Gather CPU, RAM, and VRAM info once at startup. Returns empty string on failure."""
+    try:
+        import platform
+        try:
+            import psutil
+            has_psutil = True
+        except ImportError:
+            has_psutil = False
+
+        # CPU
+        try:
+            cpu = platform.processor() or platform.machine() or "Unknown CPU"
+            for remove in ["(R)", "(TM)", "CPU ", "  "]:
+                cpu = cpu.replace(remove, "")
+            cpu = cpu.strip()
+            if has_psutil:
+                cores = psutil.cpu_count(logical=False) or "?"
+                threads = psutil.cpu_count(logical=True) or "?"
+                cpu_info = f"{cpu} ({cores}C/{threads}T)"
+            else:
+                cpu_info = cpu
+        except Exception:
+            cpu_info = "Unknown CPU"
+
+        # RAM
+        try:
+            if has_psutil:
+                ram_gb = round(psutil.virtual_memory().total / (1024 ** 3), 1)
+                ram_info = f"{ram_gb} GB RAM"
+            else:
+                ram_info = None
+        except Exception:
+            ram_info = None
+
+        # GPU / VRAM
+        try:
+            if torch.cuda.is_available():
+                gpu_name = torch.cuda.get_device_name(0)
+                vram_gb = round(torch.cuda.get_device_properties(0).total_memory / (1024 ** 3), 1)
+                gpu_info = f"{gpu_name} — {vram_gb} GB VRAM"
+            else:
+                gpu_info = "No CUDA GPU detected"
+        except Exception:
+            gpu_info = None
+
+        parts = [p for p in [cpu_info, ram_info, gpu_info] if p]
+        return " &nbsp;|&nbsp; ".join(parts) if parts else ""
+    except Exception:
+        return ""
 
 
 def build_ui():
@@ -712,10 +862,11 @@ def build_ui():
         gr.HTML(f"<style>{CUSTOM_CSS}</style>")
         with gr.Row():
             with gr.Column(scale=9):
-                gr.Markdown(
-                    "# ImaGen\nOffline text-to-image, image-to-image & text-to-video generation",
-                    elem_id="imagen-header",
-                )
+                sys_stats = _get_system_stats()
+                header_text = "# ImaGen\nOffline text-to-image, image-to-image & text-to-video generation"
+                if sys_stats:
+                    header_text += f"\n\n{sys_stats}"
+                gr.Markdown(header_text, elem_id="imagen-header")
             with gr.Column(scale=1, min_width=60):
                 shutdown_btn = gr.Button(
                     "⏻",
@@ -728,6 +879,24 @@ def build_ui():
             outputs=[shutdown_status],
             js="() => { document.title = 'ImaGen — Shut Down'; setTimeout(() => { document.body.innerHTML = '<h1 style=\"color:#e2e8f0;text-align:center;margin-top:40vh;font-family:sans-serif\">ImaGen has shut down. You can close this tab.</h1>'; }, 300); }",
         )
+
+        # ── Shared Profile Panel (hidden by default) ──
+        with gr.Group(visible=False, elem_id="profile-panel") as profile_panel:
+            profile_name_input = gr.Textbox(
+                label="Profile Name (letters and numbers only, max 30)",
+                placeholder="e.g. cinematic, anime, portrait...",
+                max_lines=1,
+                max_length=30,
+            )
+            profile_save_action = gr.Button("Save Profile", variant="primary", size="sm")
+            profile_dropdown = gr.Dropdown(
+                choices=list_profiles(),
+                label="Load Profile",
+                allow_custom_value=False,
+            )
+            profile_load_action = gr.Button("Load Profile", size="sm")
+            profile_delete_action = gr.Button("Delete Profile", size="sm")
+            profile_close_btn = gr.Button("Close", size="sm", variant="stop")
 
         with gr.Tabs():
             # === Text to Image tab ===
@@ -762,6 +931,10 @@ def build_ui():
                 )
                 with gr.Row():
                     with gr.Column(scale=1):
+                        with gr.Row():
+                            gr.Markdown("**Prompts**", elem_id="t2i-prompts-label")
+                            t2i_profile_save = gr.Button("💾", elem_classes=["profile-btn"], elem_id="profile-save-btn", size="sm")
+                            t2i_profile_load = gr.Button("📂", elem_classes=["profile-btn"], elem_id="profile-load-btn", size="sm")
                         positive_prompt = gr.Textbox(
                             label="Positive Prompt",
                             value=config.DEFAULT_POSITIVE,
@@ -967,6 +1140,10 @@ def build_ui():
                             eraser=gr.Eraser(default_size=30),
                             visible=False,
                         )
+                        with gr.Row():
+                            gr.Markdown("**Prompts**", elem_id="i2i-prompts-label")
+                            i2i_profile_save = gr.Button("💾", elem_classes=["profile-btn"], elem_id="i2i-profile-save-btn", size="sm")
+                            i2i_profile_load = gr.Button("📂", elem_classes=["profile-btn"], elem_id="i2i-profile-load-btn", size="sm")
                         i2i_positive = gr.Textbox(
                             label="Positive Prompt",
                             value=config.DEFAULT_POSITIVE,
@@ -1101,7 +1278,7 @@ def build_ui():
                     vid_model = gr.Dropdown(
                         choices=video_list_models(),
                         value=None,
-                        label="Video Model (WAN 2.1)",
+                        label="Video Model",
                         scale=3,
                     )
                     vid_status = gr.Textbox(
@@ -1123,6 +1300,10 @@ def build_ui():
 
                 with gr.Row():
                     with gr.Column(scale=1):
+                        with gr.Row():
+                            gr.Markdown("**Prompts**", elem_id="vid-prompts-label")
+                            vid_profile_save = gr.Button("💾", elem_classes=["profile-btn"], elem_id="vid-profile-save-btn", size="sm")
+                            vid_profile_load = gr.Button("📂", elem_classes=["profile-btn"], elem_id="vid-profile-load-btn", size="sm")
                         vid_positive = gr.Textbox(
                             label="Positive Prompt",
                             value=config.DEFAULT_POSITIVE,
@@ -1288,6 +1469,10 @@ def build_ui():
                             label="Source Image",
                             type="pil",
                         )
+                        with gr.Row():
+                            gr.Markdown("**Prompts**", elem_id="anim-prompts-label")
+                            anim_profile_save = gr.Button("💾", elem_classes=["profile-btn"], elem_id="anim-profile-save-btn", size="sm")
+                            anim_profile_load = gr.Button("📂", elem_classes=["profile-btn"], elem_id="anim-profile-load-btn", size="sm")
                         anim_positive = gr.Textbox(
                             label="Positive Prompt",
                             value=config.DEFAULT_POSITIVE,
@@ -1324,7 +1509,7 @@ def build_ui():
                                 step=0.5, label="Guidance Scale",
                             )
                             anim_conditioning = gr.Slider(
-                                0.0, 2.0, value=1.0,
+                                0.0, 2.0, value=1.5,
                                 step=0.05, label="Image Conditioning Scale",
                                 info="How strongly to follow the source image. Higher = more faithful.",
                             )
@@ -1443,6 +1628,80 @@ def build_ui():
                     inputs=[training_dir, lora_name, train_steps, train_lr, train_rank],
                     outputs=[train_log],
                 )
+
+        # ── Profile panel wiring ──
+        all_prompt_outputs = [
+            positive_prompt, negative_prompt,
+            i2i_positive, i2i_negative,
+            vid_positive, vid_negative,
+            anim_positive, anim_negative,
+        ]
+
+        def _show_panel_for_save(pos, neg):
+            return gr.update(visible=True), pos, neg
+
+        # Save icons — show panel and populate hidden state with current tab's prompts
+        _save_pos_state = gr.State("")
+        _save_neg_state = gr.State("")
+
+        for btn in [t2i_profile_save, i2i_profile_save, vid_profile_save, anim_profile_save]:
+            pos_input = {
+                t2i_profile_save: positive_prompt,
+                i2i_profile_save: i2i_positive,
+                vid_profile_save: vid_positive,
+                anim_profile_save: anim_positive,
+            }[btn]
+            neg_input = {
+                t2i_profile_save: negative_prompt,
+                i2i_profile_save: i2i_negative,
+                vid_profile_save: vid_negative,
+                anim_profile_save: anim_negative,
+            }[btn]
+            btn.click(
+                fn=_show_panel_for_save,
+                inputs=[pos_input, neg_input],
+                outputs=[profile_panel, _save_pos_state, _save_neg_state],
+            )
+
+        # Load icons — show panel
+        for btn in [t2i_profile_load, i2i_profile_load, vid_profile_load, anim_profile_load]:
+            btn.click(
+                fn=lambda: (gr.update(visible=True), gr.update(choices=list_profiles())),
+                outputs=[profile_panel, profile_dropdown],
+            )
+
+        # Save action
+        profile_save_action.click(
+            fn=save_profile,
+            inputs=[profile_name_input, _save_pos_state, _save_neg_state],
+            outputs=[profile_dropdown],
+        )
+
+        # Load action
+        profile_load_action.click(
+            fn=load_profile,
+            inputs=[profile_dropdown],
+            outputs=all_prompt_outputs,
+        )
+
+        # Delete action
+        profile_delete_action.click(
+            fn=delete_profile,
+            inputs=[profile_dropdown],
+            outputs=[profile_dropdown],
+        )
+
+        # Refresh dropdown when focused
+        profile_dropdown.focus(
+            fn=lambda: gr.update(choices=list_profiles()),
+            outputs=[profile_dropdown],
+        )
+
+        # Close button
+        profile_close_btn.click(
+            fn=lambda: gr.update(visible=False),
+            outputs=[profile_panel],
+        )
 
     return app
 

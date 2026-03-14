@@ -10,7 +10,7 @@ from diffusers import BitsAndBytesConfig
 from diffusers import (
     UniPCMultistepScheduler,
     DPMSolverMultistepScheduler,
-    EulerDiscreteScheduler,
+    FlowMatchEulerDiscreteScheduler,
 )
 from safetensors import safe_open
 
@@ -21,7 +21,7 @@ import config
 # flow_shift, prediction_type, etc.
 VIDEO_SCHEDULER_MAP = {
     "UniPC": UniPCMultistepScheduler,
-    "Euler": EulerDiscreteScheduler,
+    "Euler": FlowMatchEulerDiscreteScheduler,
     "DPM++ 2M": DPMSolverMultistepScheduler,
 }
 VIDEO_SCHEDULER_NAMES = list(VIDEO_SCHEDULER_MAP.keys())
@@ -98,7 +98,7 @@ class VideoGenerator:
                 torch_dtype=torch.bfloat16,
                 local_files_only=True,
             )
-            self.pipe.to("cuda")
+            self.pipe.to(config.DEVICE)
 
         else:
             # --- 14B FULL PATH (4-bit NF4 quantization) ---
@@ -225,6 +225,9 @@ class VideoGenerator:
 
         self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
         self.pipe.fuse_lora(adapter_names=adapter_names)
+        # Fusing LoRAs can upcast weights to float32; cast back to bfloat16
+        # (WAN uses bfloat16 — float16 causes precision issues with 3D convolutions)
+        self.pipe.to(dtype=torch.bfloat16)
         self._active_loras = list(lora_list)
 
     def unload_loras(self):

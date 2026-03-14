@@ -329,6 +329,8 @@ class AnimateDiffGenerator:
 
         self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
         self.pipe.fuse_lora(adapter_names=adapter_names)
+        # Fusing LoRAs can upcast weights to float32; cast everything back
+        self.pipe.to(dtype=torch.float16)
         self._active_loras = list(lora_list)
 
     def unload_loras(self):

@@ -48,6 +48,66 @@ The app auto-detects whether a model is SDXL or SD 1.5 and adjusts its pipeline 
 
 > **Note:** SD 1.5 models generate at 512x512 natively. SDXL models generate at 1024x1024. Adjust the width/height sliders to match.
 
+### Model Compatibility
+
+ImaGen supports **SD 1.5** and **SDXL** architectures for image generation, and **WAN** for video generation. Models based on other architectures (Flux, SD 3, DiT-based) are not currently supported.
+
+**Supported — Image Generation (Text to Image / Image to Image / Inpainting):**
+
+| Base Model | Architecture | Notes |
+|------------|-------------|-------|
+| SD 1.5 | SD 1.5 | Native 512x512 |
+| SD 1.5 LCM | SD 1.5 | Use low steps (4-8), guidance ~1.0 |
+| SD 1.5 Hyper | SD 1.5 | Use low steps (1-4) |
+| SD 2.0 | SD 1.5* | May work — same UNet shape |
+| SD 2.1 | SD 1.5* | May work — same UNet shape |
+| SDXL 1.0 | SDXL | Native 1024x1024 |
+| SDXL Lightning | SDXL | Use low steps (2-8), guidance ~1.0 |
+| SDXL Hyper | SDXL | Use low steps (1-4) |
+| Pony | SDXL | SDXL fine-tune |
+| Pony V7 | SDXL | SDXL fine-tune |
+| Illustrious | SDXL | SDXL fine-tune |
+| NoobAI | SDXL | SDXL fine-tune |
+| PixArt alpha | SDXL* | May need testing |
+| PixArt Sigma | SDXL* | May need testing |
+| Z Image Turbo | SDXL | Use low steps (1-4), guidance ~1.0 |
+| Z Image Base | SDXL | SDXL fine-tune |
+
+**Supported — Video Generation:**
+
+| Base Model | Notes |
+|------------|-------|
+| Wan Video 1.3B t2v | Lite model, ~5GB VRAM |
+| Wan Video 14B t2v | Full model, uses 4-bit quantization |
+| Wan Video 14B i2v 480p | Image-to-video |
+| Wan Video 14B i2v 720p | Image-to-video, higher resolution |
+| Wan Video 2.2 T2I-5B | May work if diffusers supports it |
+| Wan Video 2.2 I2V-A14B | May work if diffusers supports it |
+| Wan Video 2.2 T2V-A14B | May work if diffusers supports it |
+| Wan Video 2.5 T2V | May work if diffusers supports it |
+| Wan Video 2.5 I2V | May work if diffusers supports it |
+
+**Not Supported (different architecture):**
+
+| Base Model | Architecture | Reason |
+|------------|-------------|--------|
+| Flux .1 D / .1 S / .1 Krea / .1 Kontext | DiT (transformer) | Requires FluxPipeline |
+| Flux .2 D / .2 Klein variants | DiT (transformer) | Requires FluxPipeline |
+| SD 1.4 | SD 1.x | Older, untested |
+| Aura Flow | Flow-matching transformer | Different architecture |
+| Chroma | Unknown | Different architecture |
+| HiDream | Unknown | Different architecture |
+| Hunyuan 1 / Hunyuan Video | DiT (transformer) | Requires HunyuanPipeline |
+| Kolors | Different text encoder | Requires KolorsPipeline |
+| Lumina | DiT (transformer) | Different architecture |
+| Mochi | DiT (transformer) | Different architecture |
+| Qwen | Unknown | Different architecture |
+| LTXV / LTXV2 | Transformer-based video | Different architecture |
+| CogVideoX | Transformer-based video | Different architecture |
+| Anima | Unknown | Different architecture |
+
+> **Tip:** If a model is an SDXL or SD 1.5 fine-tune (e.g. downloaded from CivitAI with those base types), it will work even if it's not listed above. The key is the underlying architecture, not the model name.
+
 ## Upscalers
 
 The **Upscaler** dropdown at the top of the page lets you apply AI upscaling after generation. This is a simple post-process enlargement — see **Hires Fix** below for a more advanced two-pass approach.
@@ -127,6 +187,30 @@ Settings:
 ### Saving Images
 
 Click **Save as PNG** to save the current image to the `outputs/` folder with a timestamped filename.
+
+## Prompt Profiles
+
+Prompt profiles let you save and reuse positive/negative prompt combinations across all tabs.
+
+### Saving a Profile
+
+1. Click the **💾 Save** icon on any tab — the profiles panel opens
+2. Enter a profile name (letters and numbers only, max 30 characters)
+3. Click **Save** — the current tab's positive and negative prompts are saved to the `profiles/` folder
+
+### Loading a Profile
+
+1. Click the **📂 Load** icon on any tab
+2. Select a profile from the dropdown
+3. Click **Load** — the prompts are applied to all 4 tabs at once
+
+### Deleting a Profile
+
+Click **Delete** to remove the selected profile. The "default" profile is special — deleting it clears the contents of `default_positive.txt` and `default_negative.txt` rather than removing the files.
+
+### Manual Profiles
+
+You can create profiles by hand — place `{name}_positive.txt` and `{name}_negative.txt` in the `profiles/` folder. They appear in the dropdown automatically.
 
 ## Image to Image
 
@@ -284,6 +368,7 @@ ImaGen/
 ├── requirements.txt        # Python dependencies
 ├── default_positive.txt    # Default positive prompt
 ├── default_negative.txt    # Default negative prompt
+├── profiles/               # Saved prompt profiles (auto-created)
 ├── models/                 # Base models — image and video (auto-created)
 │   └── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
 ├── upscalers/              # Upscaler .pth files (auto-created)

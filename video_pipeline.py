@@ -26,15 +26,74 @@ VIDEO_SCHEDULER_MAP = {
 }
 VIDEO_SCHEDULER_NAMES = list(VIDEO_SCHEDULER_MAP.keys())
 
-# WAN 2.1 generates at 16 fps.  Frame counts must be 4k+1.
-WAN_FPS = 16
-DURATION_TO_FRAMES = {
-    1: 17,
-    2: 33,
-    3: 49,
-    4: 65,
-    5: 81,
-}
+# Default FPS for WAN video export.
+WAN_FPS = 24
+MIN_FPS = 6
+MAX_FPS = 30
+
+
+def estimate_video_vram_gb(num_frames: int, width: int = 832, height: int = 480, is_lite: bool = True) -> float:
+    """Estimate peak VRAM usage in GB for a WAN video generation.
+
+    WAN's VAE compresses 8× spatially and 4× temporally. The dominant VRAM
+    consumers during diffusion are the latent tensor and the transformer
+    activations.  During VAE decode, the full-resolution frame tensor is the
+    bottleneck.
+
+    The estimates below are empirical baselines measured on an RTX 4090 with
+    a linear per-frame overhead added.  They are *approximations* — actual
+    usage can vary with scheduler, guidance scale, and CUDA allocator
+    fragmentation.
+    """
+    # --- Diffusion pass (transformer) ---
+    # Base VRAM: model weights sitting on GPU.
+    #   1.3B bf16 ≈ 5.0 GB,  14B 4-bit + CPU offload ≈ 7.0 GB
+    # Per-frame overhead: latent channels × spatial dims × bytes, plus
+    #   intermediate activations.  Empirically ~0.06 GB/frame for 1.3B
+    #   and ~0.05 GB/frame for 14B (offload keeps transformer on CPU between
+    #   steps, so only latents + one active component sit on GPU).
+    if is_lite:
+        base_gb = 5.0
+        per_frame_gb = 0.06
+    else:
+        base_gb = 7.0
+        per_frame_gb = 0.05
+
+    diffusion_gb = base_gb + num_frames * per_frame_gb
+
+    # --- VAE decode pass ---
+    # The VAE decodes the full latent volume into pixel frames.
+    # With VAE slicing enabled the peak is lower, but it still scales
+    # roughly with the number of frames.
+    # Empirical: ~2.5 GB base + ~0.04 GB/frame (with slicing).
+    vae_decode_gb = 2.5 + num_frames * 0.04
+
+    # For 1.3B everything is on GPU so diffusion + VAE overlap a bit;
+    # peak ≈ max(diffusion, model_base + vae_decode).
+    # For 14B with CPU offload the transformer is offloaded before VAE
+    # runs, so peak ≈ max(diffusion, vae_decode + ~1 GB scheduler state).
+    if is_lite:
+        peak_gb = max(diffusion_gb, base_gb + vae_decode_gb)
+    else:
+        peak_gb = max(diffusion_gb, vae_decode_gb + 1.0)
+
+    return round(peak_gb, 1)
+
+
+def get_available_vram_gb() -> float | None:
+    """Return free VRAM in GB, or None if no CUDA GPU."""
+    if not torch.cuda.is_available():
+        return None
+    free, _ = torch.cuda.mem_get_info()
+    return round(free / (1024 ** 3), 1)
+
+
+def get_total_vram_gb() -> float | None:
+    """Return total VRAM in GB, or None if no CUDA GPU."""
+    if not torch.cuda.is_available():
+        return None
+    _, total = torch.cuda.mem_get_info()
+    return round(total / (1024 ** 3), 1)
 
 
 def _is_wan_model(model_path):
@@ -266,7 +325,7 @@ class VideoGenerator:
             raise self._Interrupted()
         return callback_kwargs
 
-    def generate_video(
+    def generate_latents(
         self,
         positive_prompt: str,
         negative_prompt: str = "",
@@ -276,13 +335,15 @@ class VideoGenerator:
         seed: int = -1,
         scheduler_name: str = "UniPC",
     ):
-        """Generate a video from text prompts. Returns a list of PIL frames."""
+        """Run diffusion steps and return raw latents (no VAE decode).
+
+        Returns latents tensor on success, or None if interrupted.
+        """
         self._interrupt = False
         self.set_scheduler(scheduler_name)
 
         generator = None
         if seed >= 0:
-            # Note: keeping "cpu" for generator is fine/stable for seed consistency
             generator = torch.Generator(device="cpu").manual_seed(seed)
 
         # --- RESOLUTION ---
@@ -297,19 +358,43 @@ class VideoGenerator:
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             generator=generator,
-            width=width,    # Added automatic width
-            height=height,  # Added automatic height
+            width=width,
+            height=height,
             callback_on_step_end=self._step_callback,
+            output_type="latent",
         )
 
         try:
             output = self.pipe(**kwargs)
         except self._Interrupted:
             self._flush_vram()
-            return []
+            return None
 
-        # output.frames is usually a list of lists: [[PIL, PIL, PIL]]
-        frames = output.frames[0]
+        # output.frames contains raw latents when output_type="latent"
+        return output.frames
+
+    def decode_latents(self, latents):
+        """Decode latents through the VAE and return a list of PIL frames."""
+        latents = latents.to(self.pipe.vae.dtype)
+
+        # Denormalize latents using VAE config (required by WAN pipeline)
+        latents_mean = (
+            torch.tensor(self.pipe.vae.config.latents_mean)
+            .view(1, self.pipe.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        latents_std = (
+            1.0 / torch.tensor(self.pipe.vae.config.latents_std)
+            .view(1, self.pipe.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        latents = latents / latents_std + latents_mean
+
+        video = self.pipe.vae.decode(latents, return_dict=False)[0]
+        frames = self.pipe.video_processor.postprocess_video(video, output_type="pil")
+        # postprocess returns list of lists: [[PIL, PIL, ...]]
+        if frames and isinstance(frames[0], list):
+            frames = frames[0]
         return frames
 
     def _flush_vram(self):

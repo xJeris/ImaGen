@@ -12,8 +12,17 @@ import config
 from pipeline import ImageGenerator, SCHEDULER_NAMES
 from upscaler import Upscaler
 from training import LoRATrainer
-from video_pipeline import VideoGenerator, DURATION_TO_FRAMES, WAN_FPS, VIDEO_SCHEDULER_NAMES
-from animatediff_pipeline import AnimateDiffGenerator, ANIMATEDIFF_SCHEDULER_NAMES, ANIMATEDIFF_FPS
+from video_chunker import generate_video_chunked
+from video_pipeline import (
+    VideoGenerator, WAN_FPS, MIN_FPS, MAX_FPS, VIDEO_SCHEDULER_NAMES,
+    estimate_video_vram_gb, get_available_vram_gb, get_total_vram_gb,
+)
+from animatediff_pipeline import (
+    AnimateDiffGenerator, ANIMATEDIFF_SCHEDULER_NAMES,
+    ANIMATEDIFF_FPS, ANIMATEDIFF_MIN_FPS, ANIMATEDIFF_MAX_FPS,
+    estimate_animatediff_vram_gb,
+)
+from preview_files import list_output_files, get_file_info, delete_files
 
 generator = ImageGenerator()
 video_generator = VideoGenerator()
@@ -413,9 +422,31 @@ def video_switch_model(model_name):
         return f"Failed to load {model_name}: {e}"
 
 
+def video_estimate_vram(duration, fps):
+    """Calculate and return a VRAM estimate string for the video settings."""
+    raw_frames = int(duration) * int(fps)
+    k = round((raw_frames - 1) / 4)
+    k = max(k, 1)
+    num_frames = 4 * k + 1
+
+    is_lite = video_generator._model_name and "1.3B" in video_generator._model_name
+    estimated = estimate_video_vram_gb(num_frames, is_lite=is_lite)
+    available = get_available_vram_gb()
+    total = get_total_vram_gb()
+
+    text = f"{num_frames} frames | ~{estimated} GB VRAM needed"
+    if available is not None and total is not None:
+        text += f" | {available} GB free / {total} GB total"
+        if estimated > available:
+            text += " — likely to crash!"
+        elif estimated > available * 0.85:
+            text += " — tight, may OOM"
+    return text
+
+
 def video_generate(
     positive_prompt, negative_prompt, description,
-    duration, steps, guidance, seed, sampler,
+    duration, fps, steps, guidance, seed, sampler,
     lora1_name, lora1_weight, lora2_name, lora2_weight,
 ):
     global _last_video_path
@@ -426,26 +457,45 @@ def video_generate(
     full_prompt = _build_prompt(positive_prompt, description)
     _apply_loras(video_generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
 
-    num_frames = DURATION_TO_FRAMES.get(int(duration), 49)
+    raw_frames = int(duration) * int(fps)
+    # WAN requires (num_frames - 1) divisible by 4, i.e. num_frames = 4k + 1.
+    # Round to the nearest valid value.
+    k = round((raw_frames - 1) / 4)
+    k = max(k, 1)  # at least 5 frames
+    num_frames = 4 * k + 1
     actual_seed = _resolve_seed(seed)
 
-    yield None, "Generating frames..."
+    # VRAM safety check — compare against free VRAM (accounts for loaded
+    # LoRAs, other models, and any other GPU consumers).
+    is_lite = video_generator._model_name and "1.3B" in video_generator._model_name
+    estimated_vram = estimate_video_vram_gb(num_frames, is_lite=is_lite)
+    available_vram = get_available_vram_gb()
+    if available_vram is not None and estimated_vram > available_vram:
+        total_vram = get_total_vram_gb() or available_vram
+        gr.Warning(
+            f"VRAM warning: ~{estimated_vram} GB needed, but only {available_vram} GB free "
+            f"(of {total_vram} GB total). Chunked generation will attempt to proceed. "
+            f"({num_frames} frames)"
+        )
 
-    frames = video_generator.generate_video(
+    yield None, f"Generating {num_frames} frames (~{estimated_vram} GB VRAM)..."
+
+    frames = generate_video_chunked(
+        video_generator=video_generator,
         positive_prompt=full_prompt,
         negative_prompt=negative_prompt,
-        num_frames=num_frames,
+        num_frames_total=num_frames,
         num_inference_steps=int(steps),
         guidance_scale=guidance,
         seed=actual_seed,
         scheduler_name=sampler,
+        progress_callback=lambda msg: gr.Info(msg),
+        vae_batch_frames=8,
     )
 
-    if video_generator.was_interrupted or frames is None:
+    if frames is None:
         yield None, "Generation stopped."
         return
-
-    yield None, "Decoding frames (VAE)..."
 
     # Export to temp MP4 (clean up previous temp file)
     if _last_video_path:
@@ -457,7 +507,7 @@ def video_generate(
     tmp.close()
 
     yield None, "Exporting video..."
-    video_generator.export_video(frames, tmp.name, fps=WAN_FPS)
+    video_generator.export_video(frames, tmp.name, fps=int(fps))
     _last_video_path = tmp.name
     yield tmp.name, f"Seed: {actual_seed}"
 
@@ -517,9 +567,28 @@ def anim_load_models(base_model, motion_adapter, sparsectrl):
         return f"Failed to load: {e}"
 
 
+def anim_estimate_vram(duration, fps):
+    """Calculate and return a VRAM estimate string for AnimateDiff settings."""
+    num_frames = int(duration) * int(fps)
+    num_frames = max(num_frames, 2)
+
+    estimated = estimate_animatediff_vram_gb(num_frames)
+    available = get_available_vram_gb()
+    total = get_total_vram_gb()
+
+    text = f"{num_frames} frames | ~{estimated} GB VRAM needed"
+    if available is not None and total is not None:
+        text += f" | {available} GB free / {total} GB total"
+        if estimated > available:
+            text += " — likely to crash!"
+        elif estimated > available * 0.85:
+            text += " — tight, may OOM"
+    return text
+
+
 def anim_generate(
     source_image, positive_prompt, negative_prompt, description,
-    num_frames, steps, guidance, conditioning_scale, seed, sampler,
+    duration, fps, steps, guidance, conditioning_scale, seed, sampler,
     lora1_name, lora1_weight, lora2_name, lora2_weight,
 ):
     global _last_anim_path
@@ -533,27 +602,41 @@ def anim_generate(
     full_prompt = _build_prompt(positive_prompt, description)
     _apply_loras(animatediff_generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
 
+    num_frames = int(duration) * int(fps)
+    num_frames = max(num_frames, 2)
     actual_seed = _resolve_seed(seed)
 
-    yield None, "Generating frames..."
+    # VRAM safety check
+    estimated_vram = estimate_animatediff_vram_gb(num_frames)
+    available_vram = get_available_vram_gb()
+    if available_vram is not None and estimated_vram > available_vram:
+        total_vram = get_total_vram_gb() or available_vram
+        gr.Warning(
+            f"VRAM warning: ~{estimated_vram} GB needed, but only {available_vram} GB free "
+            f"(of {total_vram} GB total). Chunked generation will attempt to proceed. "
+            f"({num_frames} frames)"
+        )
 
-    frames = animatediff_generator.animate_image(
-        source_image=source_image,
+    yield None, f"Generating {num_frames} frames (~{estimated_vram} GB VRAM)..."
+
+    frames = generate_video_chunked(
+        video_generator=animatediff_generator,
         positive_prompt=full_prompt,
         negative_prompt=negative_prompt,
-        num_frames=int(num_frames),
+        num_frames_total=num_frames,
         num_inference_steps=int(steps),
         guidance_scale=guidance,
-        controlnet_conditioning_scale=conditioning_scale,
         seed=actual_seed,
         scheduler_name=sampler,
+        progress_callback=lambda msg: gr.Info(msg),
+        source_image=source_image,
+        controlnet_conditioning_scale=conditioning_scale,
+        vae_batch_frames=8,
     )
 
-    if animatediff_generator.was_interrupted or frames is None:
+    if frames is None:
         yield None, "Generation stopped."
         return
-
-    yield None, "Decoding frames (VAE)..."
 
     # Export to temp MP4
     if _last_anim_path:
@@ -565,7 +648,7 @@ def anim_generate(
     tmp.close()
 
     yield None, "Exporting video..."
-    animatediff_generator.export_video(frames, tmp.name, fps=ANIMATEDIFF_FPS)
+    animatediff_generator.export_video(frames, tmp.name, fps=int(fps))
     _last_anim_path = tmp.name
     yield tmp.name, f"Seed: {actual_seed}"
 
@@ -801,6 +884,36 @@ button.secondary:hover {
     padding: 0.8rem !important;
     background: rgba(30, 41, 59, 0.4) !important;
     margin-bottom: 0.5rem !important;
+}
+
+/* ── Preview Files gallery ── */
+#preview-gallery .gallery-item {
+    transition: all 0.15s ease !important;
+    border: 2px solid transparent !important;
+    border-radius: 6px !important;
+}
+#preview-gallery .gallery-item:hover {
+    border-color: rgba(96, 165, 250, 0.4) !important;
+}
+#preview-gallery .gallery-item.selected {
+    border-color: #60a5fa !important;
+    box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.25) !important;
+}
+
+/* Video thumbnail overlay — shows a play icon */
+.video-thumb-overlay {
+    position: relative;
+}
+.video-thumb-overlay::after {
+    content: "\\25B6";
+    position: absolute;
+    bottom: 0.4rem;
+    right: 0.4rem;
+    background: rgba(0, 0, 0, 0.6);
+    color: white;
+    font-size: 0.75rem;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
 }
 """
 
@@ -1329,7 +1442,17 @@ def build_ui():
                             vid_duration = gr.Slider(
                                 1, 5, value=3, step=1,
                                 label="Duration (seconds)",
-                                info="1s=17 frames, 2s=33, 3s=49, 4s=65, 5s=81 at 16fps",
+                                info="Total frames = duration × FPS (rounded to nearest valid count)",
+                            )
+                            vid_fps = gr.Slider(
+                                MIN_FPS, MAX_FPS, value=WAN_FPS, step=1,
+                                label="Frames Per Second (FPS)",
+                                info=f"{MIN_FPS}–{MAX_FPS} FPS. 24 = cinematic, 30 = smooth. Max: 5s × 30fps = 150 frames",
+                            )
+                            vid_vram_estimate = gr.Textbox(
+                                value=video_estimate_vram(3, WAN_FPS),
+                                label="VRAM Estimate",
+                                interactive=False,
                             )
                             vid_steps = gr.Slider(
                                 1, 100, value=30,
@@ -1387,6 +1510,17 @@ def build_ui():
                             label="", interactive=False, show_label=False,
                         )
 
+                vid_duration.change(
+                    fn=video_estimate_vram,
+                    inputs=[vid_duration, vid_fps],
+                    outputs=[vid_vram_estimate],
+                )
+                vid_fps.change(
+                    fn=video_estimate_vram,
+                    inputs=[vid_duration, vid_fps],
+                    outputs=[vid_vram_estimate],
+                )
+
                 vid_lora_1.focus(
                     fn=lambda current: gr.update(choices=video_list_loras(), value=current),
                     inputs=[vid_lora_1],
@@ -1402,7 +1536,7 @@ def build_ui():
                     fn=video_generate,
                     inputs=[
                         vid_positive, vid_negative, vid_description,
-                        vid_duration, vid_steps, vid_guidance, vid_seed, vid_sampler,
+                        vid_duration, vid_fps, vid_steps, vid_guidance, vid_seed, vid_sampler,
                         vid_lora_1, vid_lora_weight_1, vid_lora_2, vid_lora_weight_2,
                     ],
                     outputs=[vid_output, vid_seed_display],
@@ -1495,10 +1629,21 @@ def build_ui():
                         )
 
                         with gr.Accordion("Advanced Settings", open=False):
-                            anim_frames = gr.Slider(
-                                8, 32, value=16, step=1,
-                                label="Number of Frames",
-                                info="More frames = longer animation, more VRAM",
+                            anim_duration = gr.Slider(
+                                1, 5, value=2, step=1,
+                                label="Duration (seconds)",
+                                info="Total frames = duration × FPS",
+                            )
+                            anim_fps = gr.Slider(
+                                ANIMATEDIFF_MIN_FPS, ANIMATEDIFF_MAX_FPS,
+                                value=ANIMATEDIFF_FPS, step=1,
+                                label="Frames Per Second (FPS)",
+                                info=f"{ANIMATEDIFF_MIN_FPS}–{ANIMATEDIFF_MAX_FPS} FPS. Max: 5s × 30fps = 150 frames",
+                            )
+                            anim_vram_estimate = gr.Textbox(
+                                value=anim_estimate_vram(2, ANIMATEDIFF_FPS),
+                                label="VRAM Estimate",
+                                interactive=False,
                             )
                             anim_steps = gr.Slider(
                                 1, 100, value=25,
@@ -1565,6 +1710,17 @@ def build_ui():
                             label="", interactive=False, show_label=False,
                         )
 
+                anim_duration.change(
+                    fn=anim_estimate_vram,
+                    inputs=[anim_duration, anim_fps],
+                    outputs=[anim_vram_estimate],
+                )
+                anim_fps.change(
+                    fn=anim_estimate_vram,
+                    inputs=[anim_duration, anim_fps],
+                    outputs=[anim_vram_estimate],
+                )
+
                 anim_lora_1.focus(
                     fn=lambda current: gr.update(choices=anim_list_loras(), value=current),
                     inputs=[anim_lora_1],
@@ -1580,7 +1736,7 @@ def build_ui():
                     fn=anim_generate,
                     inputs=[
                         anim_source, anim_positive, anim_negative, anim_description,
-                        anim_frames, anim_steps, anim_guidance, anim_conditioning,
+                        anim_duration, anim_fps, anim_steps, anim_guidance, anim_conditioning,
                         anim_seed, anim_sampler,
                         anim_lora_1, anim_lora_weight_1, anim_lora_2, anim_lora_weight_2,
                     ],
@@ -1627,6 +1783,200 @@ def build_ui():
                     fn=start_training,
                     inputs=[training_dir, lora_name, train_steps, train_lr, train_rank],
                     outputs=[train_log],
+                )
+
+            # === Preview Files tab ===
+            with gr.Tab("Preview Files") as preview_tab:
+                with gr.Row():
+                    preview_refresh_btn = gr.Button("Refresh", variant="secondary", scale=1)
+                    preview_filter = gr.Dropdown(
+                        choices=["All", "Images", "Videos"],
+                        value="All", label="Filter", scale=1,
+                    )
+                    preview_sort = gr.Dropdown(
+                        choices=["Newest First", "Oldest First", "Name A-Z"],
+                        value="Newest First", label="Sort", scale=1,
+                    )
+                    preview_select_mode = gr.Checkbox(
+                        label="Select for Delete",
+                        value=False,
+                        scale=1,
+                        info="Enable to click-select files for bulk delete",
+                    )
+                    preview_delete_btn = gr.Button(
+                        "Delete Selected (0)", variant="stop", scale=1,
+                    )
+
+                preview_gallery = gr.Gallery(
+                    label="Output Files",
+                    columns=4,
+                    height=480,
+                    object_fit="cover",
+                    allow_preview=False,
+                    buttons=["download"],
+                )
+
+                # Checkbox list for selecting files to delete (hidden until select mode)
+                preview_checklist = gr.CheckboxGroup(
+                    choices=[], value=[], label="Select files to delete",
+                    visible=False,
+                )
+
+                with gr.Row():
+                    preview_image = gr.Image(
+                        label="Preview", visible=True, interactive=False,
+                    )
+                    preview_video = gr.Video(
+                        label="Preview", visible=False,
+                    )
+
+                preview_file_info = gr.Textbox(
+                    label="File Info", interactive=False,
+                )
+                preview_status = gr.Textbox(
+                    label="", interactive=False, show_label=False,
+                )
+
+                # -- State for tracking file paths --
+                preview_file_paths = gr.State([])   # parallel list of paths
+
+                # -- Backend wrappers --
+                def _preview_refresh(filter_type, sort_order):
+                    gallery, paths, status = list_output_files(
+                        config.OUTPUT_DIR, filter_type, sort_order
+                    )
+                    # Build filename choices for the checklist
+                    names = [Path(p).name for p in paths]
+                    return (
+                        gallery, paths, status,
+                        gr.update(value="Delete Selected (0)"),
+                        gr.update(choices=names, value=[]),
+                    )
+
+                def _preview_select(evt: gr.SelectData, file_paths):
+                    if not file_paths or evt.index >= len(file_paths):
+                        return (
+                            gr.update(visible=True, value=None),
+                            gr.update(visible=False, value=None),
+                            "",
+                        )
+
+                    file_path = file_paths[evt.index]
+                    info = get_file_info(file_path)
+                    is_video = file_path.lower().endswith(".mp4")
+                    if is_video:
+                        return (
+                            gr.update(visible=False, value=None),
+                            gr.update(visible=True, value=file_path),
+                            info,
+                        )
+                    else:
+                        return (
+                            gr.update(visible=True, value=file_path),
+                            gr.update(visible=False, value=None),
+                            info,
+                        )
+
+                def _preview_checklist_changed(checked):
+                    count = len(checked)
+                    return gr.update(value=f"Delete Selected ({count})")
+
+                def _preview_delete(checked, file_paths, filter_type, sort_order):
+                    if not checked:
+                        return (
+                            gr.update(), gr.update(), gr.update(),
+                            gr.update(value="Nothing selected"),
+                            gr.update(value="Delete Selected (0)"),
+                            gr.update(),
+                            gr.update(),
+                        )
+                    # Map checked filenames back to full paths
+                    name_to_path = {Path(p).name: p for p in file_paths}
+                    paths_to_delete = [name_to_path[n] for n in checked if n in name_to_path]
+
+                    thumbs_dir = config.OUTPUT_DIR / ".thumbs"
+                    deleted, failed = delete_files(paths_to_delete, thumbs_dir)
+                    gallery, paths, status = list_output_files(
+                        config.OUTPUT_DIR, filter_type, sort_order
+                    )
+                    names = [Path(p).name for p in paths]
+                    msg = f"Deleted {deleted} file(s)"
+                    if failed:
+                        msg += f" ({failed} failed)"
+                    gr.Info(msg)
+                    return (
+                        gallery, paths, status,
+                        gr.update(value=msg),
+                        gr.update(value="Delete Selected (0)"),
+                        gr.update(value=False),  # turn off select mode
+                        gr.update(choices=names, value=[]),
+                    )
+
+                def _preview_select_mode_changed(enabled, file_paths):
+                    if enabled:
+                        names = [Path(p).name for p in file_paths]
+                        return (
+                            gr.update(visible=True, choices=names, value=[]),
+                            gr.update(value="Delete Selected (0)"),
+                        )
+                    return (
+                        gr.update(visible=False, value=[]),
+                        gr.update(value="Delete Selected (0)"),
+                    )
+
+                # -- Event wiring --
+                _refresh_outputs = [
+                    preview_gallery, preview_file_paths, preview_status,
+                    preview_delete_btn, preview_checklist,
+                ]
+                preview_tab.select(
+                    fn=_preview_refresh,
+                    inputs=[preview_filter, preview_sort],
+                    outputs=_refresh_outputs,
+                )
+                preview_refresh_btn.click(
+                    fn=_preview_refresh,
+                    inputs=[preview_filter, preview_sort],
+                    outputs=_refresh_outputs,
+                )
+                preview_filter.change(
+                    fn=_preview_refresh,
+                    inputs=[preview_filter, preview_sort],
+                    outputs=_refresh_outputs,
+                )
+                preview_sort.change(
+                    fn=_preview_refresh,
+                    inputs=[preview_filter, preview_sort],
+                    outputs=_refresh_outputs,
+                )
+                preview_select_mode.change(
+                    fn=_preview_select_mode_changed,
+                    inputs=[preview_select_mode, preview_file_paths],
+                    outputs=[preview_checklist, preview_delete_btn],
+                )
+                preview_checklist.change(
+                    fn=_preview_checklist_changed,
+                    inputs=[preview_checklist],
+                    outputs=[preview_delete_btn],
+                )
+
+                preview_gallery.select(
+                    fn=_preview_select,
+                    inputs=[preview_file_paths],
+                    outputs=[
+                        preview_image, preview_video,
+                        preview_file_info,
+                    ],
+                )
+
+                preview_delete_btn.click(
+                    fn=_preview_delete,
+                    inputs=[preview_checklist, preview_file_paths, preview_filter, preview_sort],
+                    outputs=[
+                        preview_gallery, preview_file_paths, preview_status,
+                        preview_file_info, preview_delete_btn,
+                        preview_select_mode, preview_checklist,
+                    ],
                 )
 
         # ── Profile panel wiring ──

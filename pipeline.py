@@ -280,7 +280,7 @@ class ImageGenerator:
     def was_interrupted(self):
         """Check whether the last generation was interrupted."""
         return self._interrupt
-    
+
     def _check_lora_compatible(self, lora_path: str) -> bool:
         """Check if a LoRA file is compatible with the currently loaded model.
 
@@ -360,7 +360,7 @@ class ImageGenerator:
         self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
         self.pipe.fuse_lora(adapter_names=adapter_names)
         # Fusing LoRAs can upcast weights to float32; cast everything back
-        self.pipe.to(dtype=torch.float16)
+        self.pipe.to(dtype=config.DTYPE)
         self._active_loras = list(lora_list)
 
     def unload_loras(self):

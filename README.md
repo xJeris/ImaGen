@@ -22,11 +22,12 @@ A fully self-contained AI image and video generator that runs entirely on your l
 - **LoRA Training** — Train your own LoRA on custom images directly from the UI
 - **Hires Fix** — Two-pass generation: base render → AI upscale → img2img refinement for sharper detail
 - **AI Upscalers** — Post-process upscaling with Real-ESRGAN, SwinIR, ESRGAN, and other models via [Spandrel](https://github.com/chaiNNer-org/spandrel)
+- **Preview Files** — Browse, preview, and bulk delete generated images and videos from the outputs folder
 - **Prompt Profiles** — Save and load prompt presets (positive + negative) across all tabs
 - **Multiple Samplers** — Euler, Euler Ancestral, DPM++ 2M Karras, DPM++ SDE Karras, DDIM, UniPC
 - **Hot-Swap Models** — Switch between models from the UI without restarting
 - **Fully Offline** — After first-run model download, everything runs locally
-- **VRAM Management** — Automatic model offloading, VAE tiling, 4-bit quantization for large video models
+- **VRAM Management** — Automatic model offloading, VAE tiling, chunked VAE decode, 4-bit quantization for large video models
 
 ## Screenshots
 
@@ -49,7 +50,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 
 ```bash
 # Clone the repository
-git clone https://github.com/xJeris/ImaGen.git
+git clone https://github.com/YOUR_USERNAME/ImaGen.git
 cd ImaGen
 
 # Create a virtual environment
@@ -77,7 +78,7 @@ Or double-click **`start.bat`** on Windows.
 
 On first launch, the default SDXL model (~6.5GB) downloads from HuggingFace. This only happens once — all future runs are fully offline.
 
-Once loaded, open **http://127.0.0.1:7860** in your browser. **`start.bat`** will open your browser automatically.
+Once loaded, open **http://127.0.0.1:7860** in your browser.
 
 ## Usage
 
@@ -120,10 +121,20 @@ Enable the **Enable Inpainting** checkbox to switch to inpainting mode. This rep
 
 1. Select a WAN 2.1 video model from the dropdown
 2. Enter a prompt describing the scene
-3. Set duration (1–5 seconds at 16fps)
+3. Set duration (1–5 seconds) and FPS (6–30, default 24)
 4. Click **Generate**
 
-Videos are exported as MP4. The 1.3B Lite model generates in seconds; the 14B Full model takes minutes but produces higher quality.
+Videos are exported as MP4. Generation uses single-pass diffusion with chunked VAE decode to stay within VRAM limits. The 1.3B Lite model takes 1–2 minutes; the 14B Full model takes several minutes but produces higher quality.
+
+### Preview Files
+
+The **Preview Files** tab lets you browse all saved images and videos in the `outputs/` folder:
+
+1. Click on any thumbnail to preview it below the gallery
+2. Use the **Filter** dropdown to show only images or videos
+3. Use the **Sort** dropdown to order by date or name
+4. To delete files, check **Select for Delete** — a checklist appears with all filenames
+5. Check the files you want to remove and click **Delete Selected**
 
 ### Hires Fix
 
@@ -175,7 +186,7 @@ The app auto-detects SDXL vs SD 1.5 and adjusts accordingly.
 
 | Model | VRAM | Speed | Quality |
 |-------|------|-------|---------|
-| WAN 2.1 1.3B (Lite) | ~5GB | Fast | Good for simple scenes |
+| WAN 2.1 1.3B (Lite) | ~5GB | 1–2 minutes | Good for simple scenes |
 | WAN 2.1 14B (Full) | ~7GB (4-bit) | Slower | Higher quality, more detail |
 
 ### Upscalers
@@ -193,7 +204,9 @@ ImaGen/
 ├── app.py                  # Gradio web UI
 ├── pipeline.py             # Image generation pipeline (txt2img, img2img, inpainting)
 ├── video_pipeline.py       # Video generation pipeline (WAN 2.1)
+├── video_chunker.py        # VRAM-safe video generation (single-pass diffusion + chunked VAE decode)
 ├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
+├── preview_files.py        # Preview Files tab backend (gallery, thumbnails, delete)
 ├── upscaler.py             # AI upscaler inference (Spandrel)
 ├── prompt_parser.py        # Weighted prompt syntax parser
 ├── training.py             # LoRA fine-tuning (SDXL)
@@ -226,7 +239,7 @@ ImaGen/
 |---------|----------|
 | CUDA not available / very slow | Reinstall PyTorch with CUDA: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124` |
 | Out of memory (images) | Reduce resolution (768x768 or 512x512), reduce steps, close other GPU apps |
-| Out of memory (video) | Use the 1.3B Lite model; 14B uses 4-bit quantization automatically |
+| Out of memory (video) | Use the 1.3B Lite model; 14B uses 4-bit quantization + chunked VAE decode automatically |
 | Model not in dropdown | Ensure it's in `models/` with a `model_index.json`; click dropdown to refresh |
 | Training fails | LoRA training requires an SDXL model — switch models before training |
 | First run download fails | Internet is needed only once; delete `models/` and retry if interrupted |

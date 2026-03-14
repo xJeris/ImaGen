@@ -267,12 +267,13 @@ You need three components in the `models/animatediff/` folder:
 2. Upload a source image
 3. Enter a motion prompt (e.g. "wind blowing through hair, gentle swaying")
 4. Adjust settings:
-   - **Number of Frames** (8–32) — more frames = longer animation
+   - **Duration** (1–5 seconds) and **FPS** (6–30, default 12)
    - **Image Conditioning Scale** (0.0–2.0) — how strongly to follow the source image
    - **Inference Steps** (default 25) — more = higher quality
+   - **VRAM Estimate** — shows estimated vs available VRAM in real-time
 5. Click **Animate**
 
-Output is saved as MP4 at 8fps. Dual LoRA support is available for SD 1.5-compatible LoRAs.
+Output is saved as MP4 at 12fps (adjustable from 6–30fps). Dual LoRA support is available for SD 1.5-compatible LoRAs. Like WAN video, AnimateDiff uses single-pass diffusion with chunked VAE decode for VRAM safety.
 
 ## Text to Video
 
@@ -284,10 +285,20 @@ Video models are separate from image models. Two sizes are supported:
 
 | Model | VRAM | Speed | Quality |
 |-------|------|-------|---------|
-| WAN 2.1 1.3B (Lite) | ~5GB | Fast (seconds) | Good for simple scenes |
+| WAN 2.1 1.3B (Lite) | ~5GB | 1–2 minutes | Good for simple scenes |
 | WAN 2.1 14B (Full) | ~7GB (4-bit quantized) | Slower (minutes) | Higher quality |
 
 The 14B model is automatically loaded with 4-bit NF4 quantization and CPU offloading to fit within 24GB VRAM.
+
+### VRAM-Safe Video Generation
+
+Video generation uses a single-pass diffusion + chunked VAE decode approach:
+
+1. **Diffusion** runs all frames in one pass to maintain temporal coherence (no jumpiness or subject drift)
+2. **VAE decode** splits the latent tensor into small temporal batches to stay within VRAM budget
+3. Aggressive memory reclamation happens between stages — text encoders and transformer caches are freed before VAE decode
+
+This allows generating 5-second videos at 30fps (149 frames) on a 24GB GPU with 2 LoRAs loaded.
 
 ### Adding Video Models
 
@@ -299,18 +310,42 @@ The 14B model is automatically loaded with 4-bit NF4 quantization and CPU offloa
 
 ### Video Settings
 
-- **Duration** (1–5 seconds) — generates at 16fps (e.g. 3s = 49 frames)
+- **Duration** (1–5 seconds) — default 24fps (e.g. 3s at 24fps = 73 frames)
+- **FPS** (6–30) — 24 = cinematic, 30 = smooth. Higher FPS uses more VRAM.
 - **Inference Steps** (default 30) — more steps = higher quality
 - **Guidance Scale** (default 5.0) — prompt adherence
 - **Sampler** — UniPC (default), Euler, or DPM++ 2M
 - **Seed** — set a specific seed to reproduce a video. -1 = random.
 - **LoRA 1 / LoRA 2** — up to two video-compatible LoRAs from the `loras/` folder, with independent weights
+- **VRAM Estimate** — shown in real-time as you adjust duration and FPS, with available/total VRAM comparison
+
+> **Note:** WAN requires frame counts matching `4k + 1` (5, 9, 13, ..., 149). The app automatically rounds your duration × FPS to the nearest valid count.
 
 > **Note:** Weighted prompts (`[word:weight]`) are not supported for video generation — WAN uses a different text encoder (UMT5) that doesn't support prompt weighting.
 
 ### Saving Videos
 
 Click **Save Video** to save the current video as MP4 to the `outputs/` folder.
+
+## Preview Files
+
+The **Preview Files** tab lets you browse, preview, and manage all files in the `outputs/` folder.
+
+### Browsing
+
+- The gallery auto-populates when you open the tab — no need to click Refresh manually
+- Click any thumbnail to preview the full image or video below the gallery
+- Use **Filter** to show only Images or Videos
+- Use **Sort** to order by Newest First, Oldest First, or Name A-Z
+- Video thumbnails are generated from the first frame and cached in `outputs/.thumbs/`
+
+### Deleting Files
+
+1. Check the **Select for Delete** checkbox — a checklist of all filenames appears
+2. Check the files you want to remove
+3. The **Delete Selected** button updates to show the count
+4. Click **Delete Selected** to permanently remove the checked files
+5. Select mode turns off automatically after deletion
 
 ## Training a LoRA
 
@@ -360,7 +395,9 @@ ImaGen/
 ├── app.py                  # UI entry point (Gradio)
 ├── pipeline.py             # Image model loading and inference (txt2img, img2img, inpainting)
 ├── video_pipeline.py       # Video model loading and inference (WAN 2.1)
+├── video_chunker.py        # VRAM-safe video generation (single-pass diffusion + chunked VAE decode)
 ├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
+├── preview_files.py        # Preview Files tab backend (gallery, thumbnails, delete)
 ├── upscaler.py             # Upscaler loading and inference (spandrel)
 ├── prompt_parser.py        # Weighted prompt syntax
 ├── training.py             # LoRA training (SDXL only)
@@ -389,8 +426,10 @@ ImaGen/
 
 **Out of memory errors (video)**
 - The 14B model uses 4-bit quantization + CPU offloading automatically
+- VAE decode is chunked into small batches to reduce peak VRAM — adjust `vae_batch_frames` if needed
 - If the 14B model still OOMs, use the 1.3B Lite model instead
 - Ensure no image model is loaded when generating video (switching models unloads the other automatically)
+- Check the VRAM Estimate display before generating — it shows estimated vs available VRAM in real-time
 
 **Model not showing in dropdown**
 - Ensure the model folder is directly inside `models/` and contains a `model_index.json` file
@@ -407,7 +446,7 @@ ImaGen/
 **Video generation hangs or is very slow**
 - Ensure `bitsandbytes` is installed (`pip install bitsandbytes>=0.43.0`)
 - The 14B model uses CPU offloading and is expected to take several minutes
-- The 1.3B model should generate in seconds
+- The 1.3B model typically takes 1–2 minutes
 
 **Training fails with "requires an SDXL model"**
 - LoRA training only works with SDXL models. Switch to an SDXL model before training.

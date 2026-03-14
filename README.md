@@ -77,7 +77,7 @@ Or double-click **`start.bat`** on Windows.
 
 On first launch, the default SDXL model (~6.5GB) downloads from HuggingFace. This only happens once — all future runs are fully offline.
 
-Once loaded, open **http://127.0.0.1:7860** in your browser. start.bat will open your browser automatically.
+Once loaded, open **http://127.0.0.1:7860** in your browser. **`start.bat`** will open your browser automatically.
 
 ## Usage
 

@@ -49,7 +49,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/ImaGen.git
+git clone https://github.com/xJeris/ImaGen.git
 cd ImaGen
 
 # Create a virtual environment

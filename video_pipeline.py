@@ -1,6 +1,7 @@
 import gc
 import json
 import re
+import warnings
 
 import numpy as np
 import torch
@@ -55,7 +56,7 @@ class VideoGenerator:
         self._model_name = None
         self._interrupt = False
         self._transformer_keys = None  # cached for LoRA compat checks
-        self._active_lora = None
+        self._active_loras = []
 
     def get_available_video_models(self):
         """List WAN video models in models/ directory."""
@@ -71,7 +72,7 @@ class VideoGenerator:
         self.pipe = None
         self._model_name = None
         self._transformer_keys = None
-        self._active_lora = None
+        self._active_loras = []
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -155,7 +156,7 @@ class VideoGenerator:
     def _check_lora_compatible(self, lora_path: str) -> bool:
         """Check if a LoRA file is compatible with the loaded video model."""
         if self._transformer_keys is None:
-            return True
+            return False
 
         try:
             with safe_open(lora_path, framework="pt") as f:
@@ -197,22 +198,41 @@ class VideoGenerator:
                     loras.append(f.name)
         return sorted(loras)
 
-    def load_lora(self, lora_path: str, weight: float = 1.0):
-        """Load and fuse a LoRA."""
-        from pathlib import Path
-        if self._active_lora:
-            self.unload_lora()
-        p = Path(lora_path)
-        self.pipe.load_lora_weights(str(p.parent), weight_name=p.name)
-        self.pipe.fuse_lora(lora_scale=weight)
-        self._active_lora = lora_path
+    def load_loras(self, lora_list):
+        """Load and fuse one or more LoRAs.
 
-    def unload_lora(self):
-        """Remove currently active LoRA."""
-        if self._active_lora:
+        Args:
+            lora_list: list of (path, weight) tuples.
+        """
+        from pathlib import Path
+        if self._active_loras:
+            self.unload_loras()
+        if not lora_list:
+            return
+
+        adapter_names = []
+        adapter_weights = []
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Already found a")
+            for i, (lora_path, weight) in enumerate(lora_list):
+                p = Path(lora_path)
+                name = f"lora_{i}"
+                self.pipe.load_lora_weights(
+                    str(p.parent), weight_name=p.name, adapter_name=name,
+                )
+                adapter_names.append(name)
+                adapter_weights.append(weight)
+
+        self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
+        self.pipe.fuse_lora(adapter_names=adapter_names)
+        self._active_loras = list(lora_list)
+
+    def unload_loras(self):
+        """Remove all active LoRAs."""
+        if self._active_loras:
             self.pipe.unfuse_lora()
             self.pipe.unload_lora_weights()
-            self._active_lora = None
+            self._active_loras = []
 
     def set_scheduler(self, scheduler_name: str):
         """Switch the pipeline's scheduler by name."""
@@ -228,10 +248,19 @@ class VideoGenerator:
         """Signal the pipeline to stop after the current step."""
         self._interrupt = True
 
+    @property
+    def was_interrupted(self):
+        """Check whether the last generation was interrupted."""
+        return self._interrupt
+
+    class _Interrupted(Exception):
+        """Raised inside the callback to immediately abort generation."""
+        pass
+
     def _step_callback(self, pipeline, i, t, callback_kwargs):
         """Check interrupt flag at each diffusion step."""
         if self._interrupt:
-            pipeline._interrupt = True
+            raise self._Interrupted()
         return callback_kwargs
 
     def generate_video(
@@ -270,12 +299,21 @@ class VideoGenerator:
             callback_on_step_end=self._step_callback,
         )
 
-        # This calls the underlying Diffusers pipeline
-        output = self.pipe(**kwargs)
-        
+        try:
+            output = self.pipe(**kwargs)
+        except self._Interrupted:
+            self._flush_vram()
+            return []
+
         # output.frames is usually a list of lists: [[PIL, PIL, PIL]]
         frames = output.frames[0]
         return frames
+
+    def _flush_vram(self):
+        """Free cached VRAM after interruption."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     @staticmethod
     def export_video(frames, output_path: str, fps: int = WAN_FPS):

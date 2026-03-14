@@ -101,10 +101,12 @@ Expand the **Advanced Settings** accordion to adjust:
 
 #### LoRA
 
-Expand the **LoRA** accordion to apply a trained LoRA:
+Expand the **LoRA** accordion to apply up to two LoRAs simultaneously:
 
-- **Select LoRA** — pick from `.safetensors` files in the `loras/` folder
-- **LoRA Weight** (0.0–1.5) — how strongly the LoRA style is applied
+- **LoRA 1 / LoRA 2** — pick from `.safetensors` files in the `loras/` folder. Set either to "None" to leave that slot unused.
+- **LoRA 1 Weight / LoRA 2 Weight** (0.0–1.5) — how strongly each LoRA style is applied
+
+Using two LoRAs at once lets you combine styles — for example, one LoRA for a specific art style and another for a character or subject.
 
 #### Hires Fix
 
@@ -142,7 +144,51 @@ The **Image to Image** tab lets you upload an existing image and modify it using
 | 0.6–0.7 | Significant rework — new details, altered structure |
 | 0.8–1.0 | Near-total reimagining — uses the source as a loose guide only |
 
-The output resolution matches the source image dimensions. LoRA and post-process upscaler are also available.
+The output resolution matches the source image dimensions. Dual LoRA and post-process upscaler are also available.
+
+### Inpainting
+
+Inpainting lets you selectively regenerate part of an image while keeping the rest untouched.
+
+1. Check the **Enable Inpainting** checkbox — the source image upload switches to a canvas editor
+2. Upload your image into the editor
+3. Use the brush tool to **paint white** over the area you want to regenerate (e.g. clothing, a face, an object)
+4. Enter a prompt describing what should replace the masked area (e.g. "red leather jacket" or "blue sky with clouds")
+5. Adjust **Strength** — lower keeps the masked area closer to the original, higher gives the model more freedom
+6. Click **Generate**
+
+Only the white-painted area is regenerated. Use the eraser tool to correct mistakes in your mask.
+
+Common uses:
+- Changing clothing or accessories on a person
+- Fixing faces or hands
+- Removing unwanted objects
+- Adding new elements to a scene
+
+## Animate Image
+
+The **Animate Image** tab uses AnimateDiff + SparseCtrl to turn a still image into a short animation. This requires SD 1.5 components.
+
+### Required Models
+
+You need three components in the `models/animatediff/` folder:
+
+1. **SD 1.5 Base Model** — any SD 1.5 model (e.g. Realistic Vision V5.1)
+2. **Motion Adapter** — the AnimateDiff motion module (e.g. `animatediff-motion-adapter-v1-5-3`)
+3. **SparseControlNet** — the SparseCtrl RGB model (e.g. `animatediff-sparsectrl-rgb`)
+
+### Generating Animations
+
+1. Select and load all three models using the dropdowns at the top
+2. Upload a source image
+3. Enter a motion prompt (e.g. "wind blowing through hair, gentle swaying")
+4. Adjust settings:
+   - **Number of Frames** (8–32) — more frames = longer animation
+   - **Image Conditioning Scale** (0.0–2.0) — how strongly to follow the source image
+   - **Inference Steps** (default 25) — more = higher quality
+5. Click **Animate**
+
+Output is saved as MP4 at 8fps. Dual LoRA support is available for SD 1.5-compatible LoRAs.
 
 ## Text to Video
 
@@ -174,7 +220,7 @@ The 14B model is automatically loaded with 4-bit NF4 quantization and CPU offloa
 - **Guidance Scale** (default 5.0) — prompt adherence
 - **Sampler** — UniPC (default), Euler, or DPM++ 2M
 - **Seed** — set a specific seed to reproduce a video. -1 = random.
-- **LoRA** — video-compatible LoRAs from the `loras/` folder
+- **LoRA 1 / LoRA 2** — up to two video-compatible LoRAs from the `loras/` folder, with independent weights
 
 > **Note:** Weighted prompts (`[word:weight]`) are not supported for video generation — WAN uses a different text encoder (UMT5) that doesn't support prompt weighting.
 
@@ -216,20 +262,21 @@ Training saves a `.safetensors` file to the `loras/` folder. Decreasing loss val
 
 ### Using a Trained LoRA
 
-1. On the **Text to Image** or **Image to Image** tab, expand the **LoRA** accordion
-2. Select your LoRA from the dropdown
-3. Adjust **LoRA Weight** (0.0–1.5) to control how strongly the style is applied
+1. On any generation tab, expand the **LoRA** accordion
+2. Select your LoRA from the **LoRA 1** dropdown (and optionally a second from **LoRA 2**)
+3. Adjust each LoRA's weight (0.0–1.5) to control how strongly the style is applied
 4. Generate as normal
 
-LoRAs are also available on the **Text to Video** tab — the app automatically filters to show only LoRAs compatible with the loaded video model.
+LoRAs are available on all tabs — the app automatically filters to show only LoRAs compatible with the currently loaded model. Both LoRA slots refresh their lists when you switch models.
 
 ## Project Structure
 
 ```
 ImaGen/
 ├── app.py                  # UI entry point (Gradio)
-├── pipeline.py             # Image model loading and inference (txt2img, img2img)
+├── pipeline.py             # Image model loading and inference (txt2img, img2img, inpainting)
 ├── video_pipeline.py       # Video model loading and inference (WAN 2.1)
+├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
 ├── upscaler.py             # Upscaler loading and inference (spandrel)
 ├── prompt_parser.py        # Weighted prompt syntax
 ├── training.py             # LoRA training (SDXL only)
@@ -238,6 +285,7 @@ ImaGen/
 ├── default_positive.txt    # Default positive prompt
 ├── default_negative.txt    # Default negative prompt
 ├── models/                 # Base models — image and video (auto-created)
+│   └── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
 ├── upscalers/              # Upscaler .pth files (auto-created)
 ├── loras/                  # LoRA .safetensors files (auto-created)
 └── outputs/                # Saved images and videos (auto-created)

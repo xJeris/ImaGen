@@ -1,13 +1,15 @@
 import json
 import gc
-import re
+import warnings
 
 import torch
 from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionImg2ImgPipeline,
+    StableDiffusionInpaintPipeline,
     StableDiffusionXLPipeline,
     StableDiffusionXLImg2ImgPipeline,
+    StableDiffusionXLInpaintPipeline,
     EulerDiscreteScheduler,
     EulerAncestralDiscreteScheduler,
     DPMSolverMultistepScheduler,
@@ -24,8 +26,8 @@ from prompt_parser import parse_weighted_prompt
 SCHEDULERS = {
     "Euler": (EulerDiscreteScheduler, {}),
     "Euler Ancestral": (EulerAncestralDiscreteScheduler, {}),
-    "DPM++ 2M Karras": (DPMSolverMultistepScheduler, {"use_karras_sigmas": True}),
-    "DPM++ SDE Karras": (DPMSolverMultistepScheduler, {"algorithm_type": "sde-dpmsolver++", "use_karras_sigmas": True}),
+    "DPM++ 2M Karras": (DPMSolverMultistepScheduler, {"use_karras_sigmas": True, "final_sigmas_type": "sigma_min"}),
+    "DPM++ SDE Karras": (DPMSolverMultistepScheduler, {"algorithm_type": "sde-dpmsolver++", "use_karras_sigmas": True, "final_sigmas_type": "sigma_min"}),
     "DDIM": (DDIMScheduler, {}),
     "UniPC": (UniPCMultistepScheduler, {}),
 }
@@ -57,12 +59,12 @@ class ImageGenerator:
     def __init__(self):
         self.pipe = None
         self.img2img_pipe = None
+        self.inpaint_pipe = None
         self.compel_proc = None
-        self._active_lora = None
+        self._active_loras = []
         self._model_type = None
         self._model_name = None
         self._interrupt = False
-        self._unet_keys = None  # cached for LoRA compatibility checks
 
     def get_available_models(self):
         """List models in models/ — both diffusers folders and single .safetensors files."""
@@ -77,10 +79,10 @@ class ImageGenerator:
 
     def unload_model(self):
         """Free VRAM by unloading the current model."""
-        if self._active_lora:
-            self._active_lora = None
+        self._active_loras = []
         self.pipe = None
         self.img2img_pipe = None
+        self.inpaint_pipe = None
         self.compel_proc = None
         self._model_type = None
         self._model_name = None
@@ -146,8 +148,8 @@ class ImageGenerator:
             self.pipe.scheduler.config
         )
 
-        # Let the pipeline handle VAE upcasting automatically during decode
-        self.pipe.vae.config.force_upcast = True
+        # Ensure VAE runs in float32 for numerical stability during decode
+        self.pipe.vae.to(torch.float32)
 
         # Move to device and optimize
         self.pipe.to(config.DEVICE)
@@ -160,14 +162,12 @@ class ImageGenerator:
             except Exception:
                 self.pipe.enable_attention_slicing()
 
-        # Build img2img pipeline sharing components
+        # Build img2img and inpaint pipelines sharing components
         self._build_img2img()
+        self._build_inpaint()
 
         # Initialize compel for prompt weighting
         self._init_compel()
-
-        # Cache UNet key names for LoRA compatibility checking
-        self._unet_keys = set(self.pipe.unet.state_dict().keys())
 
         if progress_callback:
             progress_callback(f"Ready — {self._model_name}")
@@ -221,6 +221,28 @@ class ImageGenerator:
                 feature_extractor=None,
             )
 
+    def _build_inpaint(self):
+        if self._model_type == "sdxl":
+            self.inpaint_pipe = StableDiffusionXLInpaintPipeline(
+                vae=self.pipe.vae,
+                text_encoder=self.pipe.text_encoder,
+                text_encoder_2=self.pipe.text_encoder_2,
+                tokenizer=self.pipe.tokenizer,
+                tokenizer_2=self.pipe.tokenizer_2,
+                unet=self.pipe.unet,
+                scheduler=self.pipe.scheduler,
+            )
+        else:
+            self.inpaint_pipe = StableDiffusionInpaintPipeline(
+                vae=self.pipe.vae,
+                text_encoder=self.pipe.text_encoder,
+                tokenizer=self.pipe.tokenizer,
+                unet=self.pipe.unet,
+                scheduler=self.pipe.scheduler,
+                safety_checker=None,
+                feature_extractor=None,
+            )
+
     def _init_compel(self):
         if self._model_type == "sdxl":
             self.compel_proc = Compel(
@@ -236,13 +258,15 @@ class ImageGenerator:
             )
 
     def set_scheduler(self, name: str):
-        """Swap the scheduler on both pipelines by name."""
+        """Swap the scheduler on all pipelines by name."""
         if name not in SCHEDULERS:
             return
         cls, kwargs = SCHEDULERS[name]
         self.pipe.scheduler = cls.from_config(self.pipe.scheduler.config, **kwargs)
         if self.img2img_pipe is not None:
             self.img2img_pipe.scheduler = self.pipe.scheduler
+        if self.inpaint_pipe is not None:
+            self.inpaint_pipe.scheduler = self.pipe.scheduler
 
     def flush_vram(self):
         """Free cached VRAM between heavy phases (e.g. between hires upscale and img2img)."""
@@ -254,51 +278,51 @@ class ImageGenerator:
         """Signal the pipeline to stop after the current step."""
         self._interrupt = True
 
+    @property
+    def was_interrupted(self):
+        """Check whether the last generation was interrupted."""
+        return self._interrupt
+    
     def _check_lora_compatible(self, lora_path: str) -> bool:
         """Check if a LoRA file is compatible with the currently loaded model.
 
-        Reads only the safetensors header (key names), no weights loaded.
-        Extracts base UNet layer names and checks overlap with the model's UNet keys.
+        Uses a simple heuristic: SDXL LoRAs have 'text_encoder_2' or
+        'lora_te2' keys (for the second text encoder), SD 1.5 LoRAs don't.
+        This avoids the fragile UNet key-matching approach.
         """
-        if self._unet_keys is None:
+        if self._model_type is None:
             return True  # no model loaded yet, show all
 
         try:
             with safe_open(lora_path, framework="pt") as f:
-                lora_keys = list(f.keys())
+                lora_keys = set(f.keys())
         except Exception:
             return True  # if we can't read it, don't hide it
 
         if not lora_keys:
             return True
 
-        # Extract base layer names from LoRA keys
-        # LoRA keys look like: "unet.down_blocks.0.attentions.0.transformer_blocks.0.attn1.to_q.lora_A.weight"
-        # We want the part before ".lora_A" or ".lora_B" etc.
-        unet_lora_keys = [k for k in lora_keys if k.startswith("unet.") or k.startswith("lora_unet_")]
-        if not unet_lora_keys:
-            return True  # no unet keys to check, allow it
+        # Detect if the LoRA targets SDXL (has second text encoder keys)
+        has_te2 = any(
+            "text_encoder_2" in k or "lora_te2_" in k
+            for k in lora_keys
+        )
 
-        base_names = set()
-        for k in unet_lora_keys:
-            # Strip common LoRA suffixes to get the base parameter name
-            base = re.sub(r'\.(lora_A|lora_B|lora_down|lora_up|alpha)\b.*', '', k)
-            # Convert diffusers LoRA key format to state dict format
-            # "unet." prefix keys: strip "unet." prefix to match state_dict keys
-            if base.startswith("unet."):
-                base = base[5:]
-            # kohya-format keys: "lora_unet_" with underscores instead of dots
-            elif base.startswith("lora_unet_"):
-                base = base[10:].replace("_", ".")
-            base_names.add(base + ".weight")
-
-        if not base_names:
+        if self._model_type == "sdxl":
+            # SDXL model: accept LoRAs that have TE2 keys (SDXL LoRAs),
+            # or LoRAs that only have UNet keys (style LoRAs work on both)
+            has_te1_only = any(
+                ("text_encoder." in k or "lora_te_" in k or "lora_te1_" in k)
+                and "text_encoder_2" not in k and "lora_te2_" not in k
+                for k in lora_keys
+            )
+            # Reject if it has SD1.5-only text encoder keys and no TE2 keys
+            if has_te1_only and not has_te2:
+                return False
             return True
-
-        # Check how many LoRA base names match model UNet keys
-        matches = sum(1 for name in base_names if name in self._unet_keys)
-        ratio = matches / len(base_names)
-        return ratio > 0.3  # at least 30% of keys match
+        else:
+            # SD 1.5 model: reject LoRAs that have TE2 keys (SDXL-only)
+            return not has_te2
 
     def _build_embeddings(self, prompt_text):
         """Build prompt embeddings. Returns (embeds, pooled) for SDXL, (embeds, None) for SD 1.5."""
@@ -309,22 +333,42 @@ class ImageGenerator:
             conditioning = self.compel_proc(prompt_text)
             return conditioning, None
 
-    def load_lora(self, lora_path: str, weight: float = 1.0):
-        """Load and fuse a LoRA."""
-        from pathlib import Path
-        if self._active_lora:
-            self.unload_lora()
-        p = Path(lora_path)
-        self.pipe.load_lora_weights(str(p.parent), weight_name=p.name)
-        self.pipe.fuse_lora(lora_scale=weight)
-        self._active_lora = lora_path
+    def load_loras(self, lora_list):
+        """Load and fuse one or more LoRAs.
 
-    def unload_lora(self):
-        """Remove currently active LoRA."""
-        if self._active_lora:
+        Args:
+            lora_list: list of (path, weight) tuples, e.g.
+                       [("/path/to/lora.safetensors", 0.8)]
+        """
+        from pathlib import Path
+        if self._active_loras:
+            self.unload_loras()
+        if not lora_list:
+            return
+
+        adapter_names = []
+        adapter_weights = []
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Already found a")
+            for i, (lora_path, weight) in enumerate(lora_list):
+                p = Path(lora_path)
+                name = f"lora_{i}"
+                self.pipe.load_lora_weights(
+                    str(p.parent), weight_name=p.name, adapter_name=name,
+                )
+                adapter_names.append(name)
+                adapter_weights.append(weight)
+
+        self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
+        self.pipe.fuse_lora(adapter_names=adapter_names)
+        self._active_loras = list(lora_list)
+
+    def unload_loras(self):
+        """Remove all active LoRAs."""
+        if self._active_loras:
             self.pipe.unfuse_lora()
             self.pipe.unload_lora_weights()
-            self._active_lora = None
+            self._active_loras = []
 
     def _step_callback(self, pipeline, i, t, callback_kwargs):
         """Check interrupt flag at each diffusion step."""
@@ -451,6 +495,54 @@ class ImageGenerator:
             if hasattr(self.pipe, "text_encoder_2") and self.pipe.text_encoder_2 is not None:
                 self.pipe.text_encoder_2.to(config.DEVICE)
 
+        return image
+
+    def inpaint(
+        self,
+        source_image,
+        mask_image,
+        positive_prompt: str,
+        negative_prompt: str = "",
+        strength: float = 0.7,
+        steps: int = config.DEFAULT_STEPS,
+        guidance_scale: float = config.DEFAULT_GUIDANCE_SCALE,
+        seed: int = config.DEFAULT_SEED,
+        scheduler_name: str = "Euler",
+    ):
+        """Inpaint masked regions of an image. Returns a PIL Image."""
+        self._interrupt = False
+        self.set_scheduler(scheduler_name)
+
+        source_image = source_image.convert("RGB")
+        mask_image = mask_image.convert("RGB")
+
+        parsed_pos = parse_weighted_prompt(positive_prompt)
+        parsed_neg = parse_weighted_prompt(negative_prompt) if negative_prompt else ""
+
+        pos_embeds, pos_pooled = self._build_embeddings(parsed_pos)
+        neg_embeds, neg_pooled = self._build_embeddings(parsed_neg if parsed_neg else "")
+
+        generator = None
+        if seed >= 0:
+            generator = torch.Generator(device=config.DEVICE).manual_seed(seed)
+
+        kwargs = dict(
+            image=source_image,
+            mask_image=mask_image,
+            prompt_embeds=pos_embeds,
+            negative_prompt_embeds=neg_embeds,
+            strength=strength,
+            num_inference_steps=steps,
+            guidance_scale=guidance_scale,
+            generator=generator,
+            callback_on_step_end=self._step_callback,
+        )
+
+        if self._model_type == "sdxl":
+            kwargs["pooled_prompt_embeds"] = pos_pooled
+            kwargs["negative_pooled_prompt_embeds"] = neg_pooled
+
+        image = self.inpaint_pipe(**kwargs).images[0]
         return image
 
     def get_available_loras(self):

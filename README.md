@@ -14,9 +14,11 @@ A fully self-contained AI image and video generator that runs entirely on your l
 
 - **Text to Image** — Generate images from text prompts using Stable Diffusion XL or SD 1.5 models
 - **Image to Image** — Upload an image and transform it with text-guided diffusion
+- **Inpainting** — Paint a mask over part of an image and regenerate just that area
 - **Text to Video** — Generate short video clips (1–5 seconds) using WAN 2.1 models
+- **Image Animation** — Animate a still image using AnimateDiff + SparseCtrl (SD 1.5)
 - **Weighted Prompts** — Fine-tune emphasis with `[green curtains:1.5]` syntax
-- **LoRA Support** — Load and apply LoRA adapters to customize model output
+- **Dual LoRA Support** — Load up to two LoRA adapters simultaneously with independent weight controls
 - **LoRA Training** — Train your own LoRA on custom images directly from the UI
 - **Hires Fix** — Two-pass generation: base render → AI upscale → img2img refinement for sharper detail
 - **AI Upscalers** — Post-process upscaling with Real-ESRGAN, SwinIR, ESRGAN, and other models via [Spandrel](https://github.com/chaiNNer-org/spandrel)
@@ -102,6 +104,17 @@ Weights above 1.0 increase emphasis, below 1.0 decrease it.
 3. Adjust **Strength** (0.0 = no change, 1.0 = fully reimagine)
 4. Click **Generate**
 
+#### Inpainting
+
+Enable the **Enable Inpainting** checkbox to switch to inpainting mode. This replaces the image upload with a canvas editor where you can paint a white mask over the area you want to regenerate. Only the masked area is changed — the rest of the image stays intact.
+
+### Animate Image
+
+1. Load an SD 1.5 base model, motion adapter, and SparseControlNet from the `models/animatediff/` folder
+2. Upload a source image
+3. Describe the desired motion (e.g. "wind blowing through hair, gentle swaying")
+4. Click **Animate**
+
 ### Text to Video
 
 1. Select a WAN 2.1 video model from the dropdown
@@ -109,7 +122,7 @@ Weights above 1.0 increase emphasis, below 1.0 decrease it.
 3. Set duration (1–5 seconds at 16fps)
 4. Click **Generate**
 
-Videos are exported as MP4. The 1.3B Lite model generates in ~2-3 minutes; the 14B Full model takes longer but produces higher quality.
+Videos are exported as MP4. The 1.3B Lite model generates in seconds; the 14B Full model takes minutes but produces higher quality.
 
 ### Hires Fix
 
@@ -166,8 +179,9 @@ Popular upscalers: `RealESRGAN_x4plus.pth`, `RealESRGAN_x2plus.pth`, `4x-UltraSh
 ```
 ImaGen/
 ├── app.py                  # Gradio web UI
-├── pipeline.py             # Image generation pipeline (txt2img, img2img)
+├── pipeline.py             # Image generation pipeline (txt2img, img2img, inpainting)
 ├── video_pipeline.py       # Video generation pipeline (WAN 2.1)
+├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
 ├── upscaler.py             # AI upscaler inference (Spandrel)
 ├── prompt_parser.py        # Weighted prompt syntax parser
 ├── training.py             # LoRA fine-tuning (SDXL)
@@ -177,6 +191,7 @@ ImaGen/
 ├── default_positive.txt    # Default positive prompt
 ├── default_negative.txt    # Default negative prompt
 ├── models/                 # Base models (image + video)
+│   └── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
 ├── upscalers/              # Upscaler model files
 ├── loras/                  # LoRA adapter files
 └── outputs/                # Saved images and videos
@@ -206,4 +221,3 @@ ImaGen/
 ## License
 
 This project is provided as-is for personal and educational use.
-

@@ -15,6 +15,7 @@ MODEL_CACHE_DIR = PROJECT_ROOT / "models"
 LORA_DIR = PROJECT_ROOT / "loras"
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 UPSCALER_DIR = PROJECT_ROOT / "upscalers"
+ANIMATEDIFF_DIR = PROJECT_ROOT / "models" / "animatediff"
 
 # Default model (used on first run to download)
 DEFAULT_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"

@@ -1,3 +1,5 @@
+import os
+import signal
 import shutil
 import tempfile
 from datetime import datetime
@@ -11,13 +13,16 @@ from pipeline import ImageGenerator, SCHEDULER_NAMES
 from upscaler import Upscaler
 from training import LoRATrainer
 from video_pipeline import VideoGenerator, DURATION_TO_FRAMES, WAN_FPS, VIDEO_SCHEDULER_NAMES
+from animatediff_pipeline import AnimateDiffGenerator, ANIMATEDIFF_SCHEDULER_NAMES, ANIMATEDIFF_FPS
 
 generator = ImageGenerator()
 video_generator = VideoGenerator()
+animatediff_generator = AnimateDiffGenerator()
 upscaler = Upscaler()
 trainer = None
 _last_image = None
 _last_video_path = None
+_last_anim_path = None
 
 
 def list_models():
@@ -38,16 +43,37 @@ def list_upscalers():
 def switch_model(model_name):
     """Hot-swap to a different base model."""
     if not model_name:
-        return "No model selected."
+        return "No model selected.", gr.update(), gr.update()
     if model_name == generator._model_name:
-        return f"Already loaded: {model_name}"
+        return f"Already loaded: {model_name}", gr.update(), gr.update()
     try:
-        # Unload video model first to free VRAM for image generation.
+        # Unload other models first to free VRAM for image generation.
         video_generator.unload_model()
+        animatediff_generator.unload_model()
         generator.load_model(model_name, progress_callback=print)
-        return f"Loaded: {model_name} ({generator._model_type})"
+
+        new_loras = list_loras()
+
+        status = f"Loaded: {model_name} ({generator._model_type})"
+        return (
+            status,
+            gr.update(choices=new_loras, value="None"),
+            gr.update(choices=new_loras, value="None"),
+        )
     except Exception as e:
-        return f"Failed to load {model_name}: {e}"
+        return f"Failed to load {model_name}: {e}", gr.update(), gr.update()
+
+
+def shutdown_app():
+    """Unload all models, free VRAM, and shut down the server."""
+    generator.unload_model()
+    video_generator.unload_model()
+    animatediff_generator.unload_model()
+    upscaler.unload()
+    # Give Gradio a moment to send the response, then exit
+    import threading
+    threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+    return "Shutting down..."
 
 
 def _apply_upscaler(image, upscaler_name):
@@ -61,7 +87,7 @@ def _apply_upscaler(image, upscaler_name):
 def generate_image(
     positive_prompt, negative_prompt, description,
     steps, guidance, width, height, seed, sampler,
-    lora_name, lora_weight, upscaler_name,
+    lora1_name, lora1_weight, lora2_name, lora2_weight, upscaler_name,
     hires_enable, hires_upscaler, hires_scale, hires_denoise, hires_steps,
 ):
     global _last_image
@@ -73,11 +99,16 @@ def generate_image(
     if not full_prompt:
         raise gr.Error("Please enter a prompt.")
 
-    if lora_name and lora_name != "None":
-        lora_path = str(config.LORA_DIR / lora_name)
-        generator.load_lora(lora_path, weight=lora_weight)
+    # Build LoRA list
+    lora_list = []
+    if lora1_name and lora1_name != "None":
+        lora_list.append((str(config.LORA_DIR / lora1_name), lora1_weight))
+    if lora2_name and lora2_name != "None":
+        lora_list.append((str(config.LORA_DIR / lora2_name), lora2_weight))
+    if lora_list:
+        generator.load_loras(lora_list)
     else:
-        generator.unload_lora()
+        generator.unload_loras()
 
     actual_seed = int(seed)
     if actual_seed < 0:
@@ -93,6 +124,9 @@ def generate_image(
         seed=actual_seed,
         scheduler_name=sampler,
     )
+
+    if generator.was_interrupted:
+        return None, "Generation stopped."
 
     # Hires Fix: upscale then img2img second pass for real detail
     if hires_enable and hires_scale > 1.0:
@@ -130,6 +164,9 @@ def generate_image(
             offload_encoders=True,  # text encoders → CPU during hires pass
         )
 
+        if generator.was_interrupted:
+            return None, "Generation stopped."
+
     # Post-process upscaler (simple enlarge, separate from hires fix)
     image = _apply_upscaler(image, upscaler_name)
     _last_image = image
@@ -155,14 +192,12 @@ def save_image():
 
 
 def img2img_generate(
-    source_image, positive_prompt, negative_prompt, description,
+    source_image, editor_value, inpaint_enabled,
+    positive_prompt, negative_prompt, description,
     strength, steps, guidance, seed, sampler,
-    lora_name, lora_weight, upscaler_name,
+    lora1_name, lora1_weight, lora2_name, lora2_weight, upscaler_name,
 ):
     global _last_image
-
-    if source_image is None:
-        raise gr.Error("Please upload a source image.")
 
     full_prompt = positive_prompt.strip()
     if description.strip():
@@ -171,26 +206,72 @@ def img2img_generate(
     if not full_prompt:
         raise gr.Error("Please enter a prompt.")
 
-    if lora_name and lora_name != "None":
-        lora_path = str(config.LORA_DIR / lora_name)
-        generator.load_lora(lora_path, weight=lora_weight)
+    # Build LoRA list
+    lora_list = []
+    if lora1_name and lora1_name != "None":
+        lora_list.append((str(config.LORA_DIR / lora1_name), lora1_weight))
+    if lora2_name and lora2_name != "None":
+        lora_list.append((str(config.LORA_DIR / lora2_name), lora2_weight))
+    if lora_list:
+        generator.load_loras(lora_list)
     else:
-        generator.unload_lora()
+        generator.unload_loras()
 
     actual_seed = int(seed)
     if actual_seed < 0:
         actual_seed = torch.randint(0, 2**32, (1,)).item()
 
-    image = generator.img2img(
-        source_image=source_image,
-        positive_prompt=full_prompt,
-        negative_prompt=negative_prompt,
-        strength=strength,
-        steps=int(steps),
-        guidance_scale=guidance,
-        seed=actual_seed,
-        scheduler_name=sampler,
-    )
+    if inpaint_enabled:
+        # Inpainting mode — extract image and mask from editor
+        if editor_value is None:
+            raise gr.Error("Please upload an image in the inpainting editor.")
+        bg = editor_value.get("background")
+        layers = editor_value.get("layers", [])
+        if bg is None:
+            raise gr.Error("Please upload an image in the inpainting editor.")
+
+        # Build mask from drawn layers (white = inpaint, black = keep)
+        from PIL import Image as PILImage
+        mask = PILImage.new("RGB", bg.size, (0, 0, 0))
+        for layer in layers:
+            if layer is not None:
+                # Layer has transparency — any non-transparent pixel is masked
+                if layer.mode == "RGBA":
+                    alpha = layer.split()[3]
+                    layer_mask = PILImage.new("RGB", bg.size, (255, 255, 255))
+                    mask.paste(layer_mask, mask=alpha)
+                else:
+                    mask.paste(layer, (0, 0))
+
+        image = generator.inpaint(
+            source_image=bg,
+            mask_image=mask,
+            positive_prompt=full_prompt,
+            negative_prompt=negative_prompt,
+            strength=strength,
+            steps=int(steps),
+            guidance_scale=guidance,
+            seed=actual_seed,
+            scheduler_name=sampler,
+        )
+    else:
+        # Normal img2img mode
+        if source_image is None:
+            raise gr.Error("Please upload a source image.")
+
+        image = generator.img2img(
+            source_image=source_image,
+            positive_prompt=full_prompt,
+            negative_prompt=negative_prompt,
+            strength=strength,
+            steps=int(steps),
+            guidance_scale=guidance,
+            seed=actual_seed,
+            scheduler_name=sampler,
+        )
+
+    if generator.was_interrupted:
+        return None, "Generation stopped."
 
     image = _apply_upscaler(image, upscaler_name)
     _last_image = image
@@ -249,8 +330,9 @@ def video_switch_model(model_name):
     if model_name == video_generator._model_name:
         return f"Already loaded: {model_name}"
     try:
-        # Unload the image model first to free VRAM for video generation.
+        # Unload other models first to free VRAM for video generation.
         generator.unload_model()
+        animatediff_generator.unload_model()
         video_generator.load_model(model_name, progress_callback=print)
         return f"Loaded: {model_name}"
     except Exception as e:
@@ -260,7 +342,7 @@ def video_switch_model(model_name):
 def video_generate(
     positive_prompt, negative_prompt, description,
     duration, steps, guidance, seed, sampler,
-    lora_name, lora_weight,
+    lora1_name, lora1_weight, lora2_name, lora2_weight,
 ):
     global _last_video_path
 
@@ -274,17 +356,24 @@ def video_generate(
     if not full_prompt:
         raise gr.Error("Please enter a prompt.")
 
-    if lora_name and lora_name != "None":
-        lora_path = str(config.LORA_DIR / lora_name)
-        video_generator.load_lora(lora_path, weight=lora_weight)
+    # Build LoRA list
+    lora_list = []
+    if lora1_name and lora1_name != "None":
+        lora_list.append((str(config.LORA_DIR / lora1_name), lora1_weight))
+    if lora2_name and lora2_name != "None":
+        lora_list.append((str(config.LORA_DIR / lora2_name), lora2_weight))
+    if lora_list:
+        video_generator.load_loras(lora_list)
     else:
-        video_generator.unload_lora()
+        video_generator.unload_loras()
 
     num_frames = DURATION_TO_FRAMES.get(int(duration), 49)
 
     actual_seed = int(seed)
     if actual_seed < 0:
         actual_seed = torch.randint(0, 2**32, (1,)).item()
+
+    yield None, "Generating frames..."
 
     frames = video_generator.generate_video(
         positive_prompt=full_prompt,
@@ -296,6 +385,12 @@ def video_generate(
         scheduler_name=sampler,
     )
 
+    if video_generator.was_interrupted or not frames:
+        yield None, "Generation stopped."
+        return
+
+    yield None, "Decoding frames (VAE)..."
+
     # Export to temp MP4 (clean up previous temp file)
     if _last_video_path:
         try:
@@ -304,13 +399,16 @@ def video_generate(
             pass
     tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     tmp.close()
+
+    yield None, "Exporting video..."
     video_generator.export_video(frames, tmp.name, fps=WAN_FPS)
     _last_video_path = tmp.name
-    return tmp.name, f"Seed: {actual_seed}"
+    yield tmp.name, f"Seed: {actual_seed}"
 
 
 def video_stop():
     video_generator.interrupt()
+    return "Stopping..."
 
 
 def video_save():
@@ -322,6 +420,131 @@ def video_save():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dest = config.OUTPUT_DIR / f"vid_{timestamp}.mp4"
     shutil.copy2(_last_video_path, str(dest))
+    return f"Saved to {dest}"
+
+
+# === AnimateDiff functions ===
+
+def anim_list_base_models():
+    return animatediff_generator.get_available_base_models()
+
+
+def anim_list_motion_adapters():
+    return animatediff_generator.get_available_motion_adapters()
+
+
+def anim_list_sparsectrls():
+    return animatediff_generator.get_available_sparsectrls()
+
+
+def anim_list_loras():
+    return ["None"] + animatediff_generator.get_available_loras()
+
+
+def anim_load_models(base_model, motion_adapter, sparsectrl):
+    if not base_model:
+        return "No base model selected."
+    if not motion_adapter:
+        return "No motion adapter selected."
+    if not sparsectrl:
+        return "No SparseControlNet selected."
+    try:
+        # Unload other models first to free VRAM.
+        generator.unload_model()
+        video_generator.unload_model()
+        animatediff_generator.load_model(
+            base_model, motion_adapter, sparsectrl,
+            progress_callback=print,
+        )
+        return f"Loaded: AnimateDiff ({base_model})"
+    except Exception as e:
+        return f"Failed to load: {e}"
+
+
+def anim_generate(
+    source_image, positive_prompt, negative_prompt, description,
+    num_frames, steps, guidance, conditioning_scale, seed, sampler,
+    lora1_name, lora1_weight, lora2_name, lora2_weight,
+):
+    global _last_anim_path
+
+    if animatediff_generator.pipe is None:
+        raise gr.Error("Please load AnimateDiff models first.")
+
+    if source_image is None:
+        raise gr.Error("Please upload a source image.")
+
+    full_prompt = positive_prompt.strip()
+    if description.strip():
+        full_prompt = f"{full_prompt}, {description.strip()}"
+
+    if not full_prompt:
+        raise gr.Error("Please enter a prompt.")
+
+    # Build LoRA list
+    lora_list = []
+    if lora1_name and lora1_name != "None":
+        lora_list.append((str(config.LORA_DIR / lora1_name), lora1_weight))
+    if lora2_name and lora2_name != "None":
+        lora_list.append((str(config.LORA_DIR / lora2_name), lora2_weight))
+    if lora_list:
+        animatediff_generator.load_loras(lora_list)
+    else:
+        animatediff_generator.unload_loras()
+
+    actual_seed = int(seed)
+    if actual_seed < 0:
+        actual_seed = torch.randint(0, 2**32, (1,)).item()
+
+    yield None, "Generating frames..."
+
+    frames = animatediff_generator.animate_image(
+        source_image=source_image,
+        positive_prompt=full_prompt,
+        negative_prompt=negative_prompt,
+        num_frames=int(num_frames),
+        num_inference_steps=int(steps),
+        guidance_scale=guidance,
+        controlnet_conditioning_scale=conditioning_scale,
+        seed=actual_seed,
+        scheduler_name=sampler,
+    )
+
+    if animatediff_generator.was_interrupted or not frames:
+        yield None, "Generation stopped."
+        return
+
+    yield None, "Decoding frames (VAE)..."
+
+    # Export to temp MP4
+    if _last_anim_path:
+        try:
+            Path(_last_anim_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp.close()
+
+    yield None, "Exporting video..."
+    animatediff_generator.export_video(frames, tmp.name, fps=ANIMATEDIFF_FPS)
+    _last_anim_path = tmp.name
+    yield tmp.name, f"Seed: {actual_seed}"
+
+
+def anim_stop():
+    animatediff_generator.interrupt()
+    return "Stopping..."
+
+
+def anim_save():
+    global _last_anim_path
+    if _last_anim_path is None:
+        return "No animation to save. Generate one first."
+
+    config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = config.OUTPUT_DIR / f"anim_{timestamp}.mp4"
+    shutil.copy2(_last_anim_path, str(dest))
     return f"Saved to {dest}"
 
 
@@ -447,57 +670,96 @@ button.secondary:hover {
 .block {
     border-radius: 8px !important;
 }
+
+/* ── Shutdown button ── */
+#shutdown-btn {
+    position: relative;
+    font-size: 1.4rem !important;
+    padding: 0.3rem 0.6rem !important;
+    min-width: 42px !important;
+    max-width: 42px !important;
+    height: 42px !important;
+    border-radius: 50% !important;
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    margin-top: 1.2rem;
+}
+#shutdown-btn::after {
+    content: "Shut down ImaGen";
+    position: absolute;
+    bottom: -2rem;
+    right: 0;
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+#shutdown-btn:hover::after {
+    opacity: 1;
+}
 """
 
 
 def build_ui():
     with gr.Blocks(title="ImaGen — Text to Image & Video", fill_width=True) as app:
         gr.HTML(f"<style>{CUSTOM_CSS}</style>")
-        gr.Markdown(
-            "# ImaGen\nOffline text-to-image, image-to-image & video generation",
-            elem_id="imagen-header",
-        )
-
-        # === Global settings bar ===
         with gr.Row():
-            model_dropdown = gr.Dropdown(
-                choices=list_models(),
-                value=generator._model_name,
-                label="Base Model",
-                scale=3,
-            )
-            upscaler_dropdown = gr.Dropdown(
-                choices=list_upscalers(),
-                value="None",
-                label="Upscaler",
-                scale=2,
-            )
-            model_status = gr.Textbox(
-                value=f"Loaded: {generator._model_name} ({generator._model_type})",
-                label="Status",
-                interactive=False,
-                scale=2,
-            )
-
-        model_dropdown.change(
-            fn=switch_model,
-            inputs=[model_dropdown],
-            outputs=[model_status],
-        )
-
-        # Refresh dropdowns on focus (rescan folders for new files)
-        model_dropdown.focus(
-            fn=lambda: gr.update(choices=list_models()),
-            outputs=[model_dropdown],
-        )
-        upscaler_dropdown.focus(
-            fn=lambda: gr.update(choices=list_upscalers()),
-            outputs=[upscaler_dropdown],
+            with gr.Column(scale=9):
+                gr.Markdown(
+                    "# ImaGen\nOffline text-to-image, image-to-image & text-to-video generation",
+                    elem_id="imagen-header",
+                )
+            with gr.Column(scale=1, min_width=60):
+                shutdown_btn = gr.Button(
+                    "⏻",
+                    variant="stop",
+                    elem_id="shutdown-btn",
+                )
+        shutdown_status = gr.Textbox(visible=False)
+        shutdown_btn.click(
+            fn=shutdown_app,
+            outputs=[shutdown_status],
+            js="() => { document.title = 'ImaGen — Shut Down'; setTimeout(() => { document.body.innerHTML = '<h1 style=\"color:#e2e8f0;text-align:center;margin-top:40vh;font-family:sans-serif\">ImaGen has shut down. You can close this tab.</h1>'; }, 300); }",
         )
 
         with gr.Tabs():
             # === Text to Image tab ===
             with gr.Tab("Text to Image"):
+                with gr.Row():
+                    model_dropdown = gr.Dropdown(
+                        choices=list_models(),
+                        value=generator._model_name,
+                        label="Base Model",
+                        scale=3,
+                    )
+                    upscaler_dropdown = gr.Dropdown(
+                        choices=list_upscalers(),
+                        value="None",
+                        label="Upscaler",
+                        scale=2,
+                    )
+                    model_status = gr.Textbox(
+                        value=f"Loaded: {generator._model_name} ({generator._model_type})",
+                        label="Status",
+                        interactive=False,
+                        scale=2,
+                    )
+
+                model_dropdown.focus(
+                    fn=lambda: gr.update(choices=list_models()),
+                    outputs=[model_dropdown],
+                )
+                upscaler_dropdown.focus(
+                    fn=lambda: gr.update(choices=list_upscalers()),
+                    outputs=[upscaler_dropdown],
+                )
                 with gr.Row():
                     with gr.Column(scale=1):
                         positive_prompt = gr.Textbox(
@@ -549,14 +811,23 @@ def build_ui():
                             )
 
                         with gr.Accordion("LoRA", open=False):
-                            lora_dropdown = gr.Dropdown(
+                            lora_dropdown_1 = gr.Dropdown(
                                 choices=list_loras(),
                                 value="None",
-                                label="Select LoRA",
+                                label="LoRA 1",
                             )
-                            lora_weight = gr.Slider(
+                            lora_weight_1 = gr.Slider(
                                 0.0, 1.5, value=1.0,
-                                step=0.05, label="LoRA Weight",
+                                step=0.05, label="LoRA 1 Weight",
+                            )
+                            lora_dropdown_2 = gr.Dropdown(
+                                choices=list_loras(),
+                                value="None",
+                                label="LoRA 2",
+                            )
+                            lora_weight_2 = gr.Slider(
+                                0.0, 1.5, value=1.0,
+                                step=0.05, label="LoRA 2 Weight",
                             )
 
                         with gr.Accordion("Hires Fix", open=False):
@@ -596,6 +867,7 @@ def build_ui():
                     with gr.Column(scale=1):
                         output_image = gr.Image(
                             label="Generated Image",
+                            show_label=False,
                             type="pil",
                             interactive=False,
                         )
@@ -608,9 +880,20 @@ def build_ui():
                             label="", interactive=False, show_label=False,
                         )
 
-                lora_dropdown.focus(
-                    fn=lambda: gr.update(choices=list_loras()),
-                    outputs=[lora_dropdown],
+                model_dropdown.change(
+                    fn=switch_model,
+                    inputs=[model_dropdown],
+                    outputs=[model_status, lora_dropdown_1, lora_dropdown_2],
+                )
+                lora_dropdown_1.focus(
+                    fn=lambda current: gr.update(choices=list_loras(), value=current),
+                    inputs=[lora_dropdown_1],
+                    outputs=[lora_dropdown_1],
+                )
+                lora_dropdown_2.focus(
+                    fn=lambda current: gr.update(choices=list_loras(), value=current),
+                    inputs=[lora_dropdown_2],
+                    outputs=[lora_dropdown_2],
                 )
                 hires_upscaler.focus(
                     fn=lambda: gr.update(choices=["Lanczos"] + upscaler.get_available_upscalers()),
@@ -621,21 +904,68 @@ def build_ui():
                     inputs=[
                         positive_prompt, negative_prompt, description,
                         steps, guidance, width, height, seed, sampler,
-                        lora_dropdown, lora_weight, upscaler_dropdown,
+                        lora_dropdown_1, lora_weight_1, lora_dropdown_2, lora_weight_2,
+                        upscaler_dropdown,
                         hires_enable, hires_upscaler, hires_scale, hires_denoise, hires_steps,
                     ],
                     outputs=[output_image, seed_display],
                 )
-                stop_btn.click(fn=stop_generation)
+                stop_btn.click(fn=stop_generation, outputs=[seed_display])
                 save_btn.click(fn=save_image, outputs=[save_status])
 
             # === Img2Img tab ===
             with gr.Tab("Image to Image"):
                 with gr.Row():
+                    i2i_model_dropdown = gr.Dropdown(
+                        choices=list_models(),
+                        value=generator._model_name,
+                        label="Base Model",
+                        scale=3,
+                    )
+                    i2i_upscaler_dropdown = gr.Dropdown(
+                        choices=list_upscalers(),
+                        value="None",
+                        label="Upscaler",
+                        scale=2,
+                    )
+                    i2i_model_status = gr.Textbox(
+                        value=f"Loaded: {generator._model_name} ({generator._model_type})",
+                        label="Status",
+                        interactive=False,
+                        scale=2,
+                    )
+
+                i2i_model_dropdown.focus(
+                    fn=lambda: gr.update(choices=list_models()),
+                    outputs=[i2i_model_dropdown],
+                )
+                i2i_upscaler_dropdown.focus(
+                    fn=lambda: gr.update(choices=list_upscalers()),
+                    outputs=[i2i_upscaler_dropdown],
+                )
+
+                with gr.Row():
                     with gr.Column(scale=1):
+                        i2i_inpaint_enable = gr.Checkbox(
+                            label="Enable Inpainting",
+                            value=False,
+                            info="Paint a mask over the area you want to regenerate",
+                        )
                         i2i_source = gr.Image(
                             label="Source Image",
                             type="pil",
+                        )
+                        i2i_editor = gr.ImageEditor(
+                            label="Inpaint — paint white over the area to regenerate",
+                            type="pil",
+                            brush=gr.Brush(
+                                colors=["#FFFFFF"],
+                                default_color="#FFFFFF",
+                                color_mode="fixed",
+                                default_size=30,
+                            ),
+                            eraser=gr.Eraser(default_size=30),
+                            visible=False,
                         )
                         i2i_positive = gr.Textbox(
                             label="Positive Prompt",
@@ -683,14 +1013,23 @@ def build_ui():
                             )
 
                         with gr.Accordion("LoRA", open=False):
-                            i2i_lora = gr.Dropdown(
+                            i2i_lora_1 = gr.Dropdown(
                                 choices=list_loras(),
                                 value="None",
-                                label="Select LoRA",
+                                label="LoRA 1",
                             )
-                            i2i_lora_weight = gr.Slider(
+                            i2i_lora_weight_1 = gr.Slider(
                                 0.0, 1.5, value=1.0,
-                                step=0.05, label="LoRA Weight",
+                                step=0.05, label="LoRA 1 Weight",
+                            )
+                            i2i_lora_2 = gr.Dropdown(
+                                choices=list_loras(),
+                                value="None",
+                                label="LoRA 2",
+                            )
+                            i2i_lora_weight_2 = gr.Slider(
+                                0.0, 1.5, value=1.0,
+                                step=0.05, label="LoRA 2 Weight",
                             )
 
                         with gr.Row():
@@ -705,6 +1044,7 @@ def build_ui():
                     with gr.Column(scale=1):
                         i2i_output = gr.Image(
                             label="Result",
+                            show_label=False,
                             type="pil",
                             interactive=False,
                         )
@@ -717,21 +1057,42 @@ def build_ui():
                             label="", interactive=False, show_label=False,
                         )
 
-                i2i_lora.focus(
-                    fn=lambda: gr.update(choices=list_loras()),
-                    outputs=[i2i_lora],
+                i2i_model_dropdown.change(
+                    fn=switch_model,
+                    inputs=[i2i_model_dropdown],
+                    outputs=[i2i_model_status, i2i_lora_1, i2i_lora_2],
+                )
+                i2i_lora_1.focus(
+                    fn=lambda current: gr.update(choices=list_loras(), value=current),
+                    inputs=[i2i_lora_1],
+                    outputs=[i2i_lora_1],
+                )
+                i2i_lora_2.focus(
+                    fn=lambda current: gr.update(choices=list_loras(), value=current),
+                    inputs=[i2i_lora_2],
+                    outputs=[i2i_lora_2],
+                )
+                i2i_inpaint_enable.change(
+                    fn=lambda enabled: (
+                        gr.update(visible=not enabled),
+                        gr.update(visible=enabled),
+                    ),
+                    inputs=[i2i_inpaint_enable],
+                    outputs=[i2i_source, i2i_editor],
                 )
 
                 i2i_btn.click(
                     fn=img2img_generate,
                     inputs=[
-                        i2i_source, i2i_positive, i2i_negative, i2i_description,
+                        i2i_source, i2i_editor, i2i_inpaint_enable,
+                        i2i_positive, i2i_negative, i2i_description,
                         i2i_strength, i2i_steps, i2i_guidance, i2i_seed, i2i_sampler,
-                        i2i_lora, i2i_lora_weight, upscaler_dropdown,
+                        i2i_lora_1, i2i_lora_weight_1, i2i_lora_2, i2i_lora_weight_2,
+                        i2i_upscaler_dropdown,
                     ],
                     outputs=[i2i_output, i2i_seed_display],
                 )
-                i2i_stop_btn.click(fn=stop_generation)
+                i2i_stop_btn.click(fn=stop_generation, outputs=[i2i_seed_display])
                 i2i_save_btn.click(fn=save_image, outputs=[i2i_save_status])
 
             # === Text to Video tab ===
@@ -808,14 +1169,23 @@ def build_ui():
                             )
 
                         with gr.Accordion("LoRA", open=False):
-                            vid_lora = gr.Dropdown(
+                            vid_lora_1 = gr.Dropdown(
                                 choices=video_list_loras(),
                                 value="None",
-                                label="Select LoRA",
+                                label="LoRA 1",
                             )
-                            vid_lora_weight = gr.Slider(
+                            vid_lora_weight_1 = gr.Slider(
                                 0.0, 1.5, value=1.0,
-                                step=0.05, label="LoRA Weight",
+                                step=0.05, label="LoRA 1 Weight",
+                            )
+                            vid_lora_2 = gr.Dropdown(
+                                choices=video_list_loras(),
+                                value="None",
+                                label="LoRA 2",
+                            )
+                            vid_lora_weight_2 = gr.Slider(
+                                0.0, 1.5, value=1.0,
+                                step=0.05, label="LoRA 2 Weight",
                             )
 
                         with gr.Row():
@@ -823,7 +1193,10 @@ def build_ui():
                             vid_stop_btn = gr.Button("Stop", variant="stop")
 
                     with gr.Column(scale=1):
-                        vid_output = gr.Video(label="Generated Video")
+                        vid_output = gr.Video(
+                            label="Generated Video",
+                            show_label=False,
+                        )
                         vid_seed_display = gr.Textbox(
                             label="", interactive=False, show_label=False,
                             placeholder="Seed will appear here after generation",
@@ -833,9 +1206,15 @@ def build_ui():
                             label="", interactive=False, show_label=False,
                         )
 
-                vid_lora.focus(
-                    fn=lambda: gr.update(choices=video_list_loras()),
-                    outputs=[vid_lora],
+                vid_lora_1.focus(
+                    fn=lambda current: gr.update(choices=video_list_loras(), value=current),
+                    inputs=[vid_lora_1],
+                    outputs=[vid_lora_1],
+                )
+                vid_lora_2.focus(
+                    fn=lambda current: gr.update(choices=video_list_loras(), value=current),
+                    inputs=[vid_lora_2],
+                    outputs=[vid_lora_2],
                 )
 
                 vid_btn.click(
@@ -843,12 +1222,187 @@ def build_ui():
                     inputs=[
                         vid_positive, vid_negative, vid_description,
                         vid_duration, vid_steps, vid_guidance, vid_seed, vid_sampler,
-                        vid_lora, vid_lora_weight,
+                        vid_lora_1, vid_lora_weight_1, vid_lora_2, vid_lora_weight_2,
                     ],
                     outputs=[vid_output, vid_seed_display],
                 )
-                vid_stop_btn.click(fn=video_stop)
+                vid_stop_btn.click(fn=video_stop, outputs=[vid_seed_display])
                 vid_save_btn.click(fn=video_save, outputs=[vid_save_status])
+
+            # === Animate Image tab ===
+            with gr.Tab("Animate Image"):
+                gr.Markdown(
+                    "Animate a still image using **AnimateDiff + SparseCtrl**. "
+                    "Requires SD 1.5 base model, motion adapter, and SparseControlNet "
+                    "in `models/animatediff/`."
+                )
+                with gr.Row():
+                    anim_base_model = gr.Dropdown(
+                        choices=anim_list_base_models(),
+                        value=None,
+                        label="SD 1.5 Base Model",
+                        scale=2,
+                    )
+                    anim_motion_adapter = gr.Dropdown(
+                        choices=anim_list_motion_adapters(),
+                        value=None,
+                        label="Motion Adapter",
+                        scale=2,
+                    )
+                    anim_sparsectrl = gr.Dropdown(
+                        choices=anim_list_sparsectrls(),
+                        value=None,
+                        label="SparseControlNet",
+                        scale=2,
+                    )
+                with gr.Row():
+                    anim_load_btn = gr.Button("Load Models", variant="primary", scale=1)
+                    anim_status = gr.Textbox(
+                        value="No AnimateDiff models loaded",
+                        label="Status",
+                        interactive=False,
+                        scale=3,
+                    )
+
+                anim_load_btn.click(
+                    fn=anim_load_models,
+                    inputs=[anim_base_model, anim_motion_adapter, anim_sparsectrl],
+                    outputs=[anim_status],
+                )
+                anim_base_model.focus(
+                    fn=lambda: gr.update(choices=anim_list_base_models()),
+                    outputs=[anim_base_model],
+                )
+                anim_motion_adapter.focus(
+                    fn=lambda: gr.update(choices=anim_list_motion_adapters()),
+                    outputs=[anim_motion_adapter],
+                )
+                anim_sparsectrl.focus(
+                    fn=lambda: gr.update(choices=anim_list_sparsectrls()),
+                    outputs=[anim_sparsectrl],
+                )
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        anim_source = gr.Image(
+                            label="Source Image",
+                            type="pil",
+                        )
+                        anim_positive = gr.Textbox(
+                            label="Positive Prompt",
+                            value=config.DEFAULT_POSITIVE,
+                            placeholder="Describe the motion or scene...",
+                            lines=3,
+                            max_lines=3,
+                        )
+                        anim_negative = gr.Textbox(
+                            label="Negative Prompt",
+                            value=config.DEFAULT_NEGATIVE,
+                            placeholder="blurry, low quality, static...",
+                            lines=2,
+                            max_lines=2,
+                        )
+                        anim_description = gr.Textbox(
+                            label="Description",
+                            placeholder="Additional motion details...",
+                            lines=2,
+                            max_lines=2,
+                        )
+
+                        with gr.Accordion("Advanced Settings", open=False):
+                            anim_frames = gr.Slider(
+                                8, 32, value=16, step=1,
+                                label="Number of Frames",
+                                info="More frames = longer animation, more VRAM",
+                            )
+                            anim_steps = gr.Slider(
+                                1, 100, value=25,
+                                step=1, label="Inference Steps",
+                            )
+                            anim_guidance = gr.Slider(
+                                1.0, 20.0, value=7.5,
+                                step=0.5, label="Guidance Scale",
+                            )
+                            anim_conditioning = gr.Slider(
+                                0.0, 2.0, value=1.0,
+                                step=0.05, label="Image Conditioning Scale",
+                                info="How strongly to follow the source image. Higher = more faithful.",
+                            )
+                            anim_seed = gr.Number(
+                                value=config.DEFAULT_SEED,
+                                label="Seed (-1 = random)",
+                            )
+                            anim_sampler = gr.Dropdown(
+                                choices=ANIMATEDIFF_SCHEDULER_NAMES,
+                                value="DPM++ 2M Karras",
+                                label="Sampler",
+                            )
+
+                        with gr.Accordion("LoRA", open=False):
+                            anim_lora_1 = gr.Dropdown(
+                                choices=anim_list_loras(),
+                                value="None",
+                                label="LoRA 1",
+                            )
+                            anim_lora_weight_1 = gr.Slider(
+                                0.0, 1.5, value=1.0,
+                                step=0.05, label="LoRA 1 Weight",
+                            )
+                            anim_lora_2 = gr.Dropdown(
+                                choices=anim_list_loras(),
+                                value="None",
+                                label="LoRA 2",
+                            )
+                            anim_lora_weight_2 = gr.Slider(
+                                0.0, 1.5, value=1.0,
+                                step=0.05, label="LoRA 2 Weight",
+                            )
+
+                        with gr.Row():
+                            anim_btn = gr.Button("Animate", variant="primary")
+                            anim_stop_btn = gr.Button("Stop", variant="stop")
+                        gr.Markdown(
+                            "**Tip:** Use descriptive motion prompts like "
+                            "`wind blowing through hair, gentle swaying` for better results."
+                        )
+
+                    with gr.Column(scale=1):
+                        anim_output = gr.Video(
+                            label="Animated Result",
+                            show_label=False,
+                        )
+                        anim_seed_display = gr.Textbox(
+                            label="", interactive=False, show_label=False,
+                            placeholder="Seed will appear here after generation",
+                        )
+                        anim_save_btn = gr.Button("Save Video")
+                        anim_save_status = gr.Textbox(
+                            label="", interactive=False, show_label=False,
+                        )
+
+                anim_lora_1.focus(
+                    fn=lambda current: gr.update(choices=anim_list_loras(), value=current),
+                    inputs=[anim_lora_1],
+                    outputs=[anim_lora_1],
+                )
+                anim_lora_2.focus(
+                    fn=lambda current: gr.update(choices=anim_list_loras(), value=current),
+                    inputs=[anim_lora_2],
+                    outputs=[anim_lora_2],
+                )
+
+                anim_btn.click(
+                    fn=anim_generate,
+                    inputs=[
+                        anim_source, anim_positive, anim_negative, anim_description,
+                        anim_frames, anim_steps, anim_guidance, anim_conditioning,
+                        anim_seed, anim_sampler,
+                        anim_lora_1, anim_lora_weight_1, anim_lora_2, anim_lora_weight_2,
+                    ],
+                    outputs=[anim_output, anim_seed_display],
+                )
+                anim_stop_btn.click(fn=anim_stop, outputs=[anim_seed_display])
+                anim_save_btn.click(fn=anim_save, outputs=[anim_save_status])
 
             # === Train tab ===
             with gr.Tab("Train LoRA"):
@@ -957,4 +1511,4 @@ if __name__ == "__main__":
         # ── Shadows ──
         shadow_spread="8px",
     )
-    app.launch(server_name="127.0.0.1", theme=theme, css=CUSTOM_CSS)
+    app.launch(server_name="127.0.0.1", theme=theme, css=CUSTOM_CSS, inbrowser=True)

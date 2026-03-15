@@ -78,46 +78,43 @@ class Upscaler:
         # Detect upscale factor from model
         scale = model.scale
 
-        # If the image is small enough, process in one shot
-        if h <= tile_size and w <= tile_size:
-            tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)
-            tensor = tensor.to(device=device, dtype=model.dtype)
-            with torch.no_grad():
-                output = model(tensor)
-            output = output.squeeze(0).clamp(0, 1).permute(1, 2, 0)
-            output = (output.cpu().numpy() * 255).astype(np.uint8)
-            model.to("cpu")
-            return Image.fromarray(output)
-
-        # Tiled upscale for large images
-        out_h, out_w = h * scale, w * scale
-        result = np.zeros((out_h, out_w, c), dtype=np.float32)
-        weight_map = np.zeros((out_h, out_w, c), dtype=np.float32)
-
-        step = tile_size - overlap
-
-        for y in range(0, h, step):
-            for x in range(0, w, step):
-                # Clamp tile bounds to image edges
-                y2 = min(y + tile_size, h)
-                x2 = min(x + tile_size, w)
-                y1 = max(y2 - tile_size, 0)
-                x1 = max(x2 - tile_size, 0)
-
-                tile = img_array[y1:y2, x1:x2]
-                tensor = torch.from_numpy(tile).permute(2, 0, 1).unsqueeze(0)
+        with torch.inference_mode():
+            # If the image is small enough, process in one shot
+            if h <= tile_size and w <= tile_size:
+                tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)
                 tensor = tensor.to(device=device, dtype=model.dtype)
+                output = model(tensor)
+                output = output.squeeze(0).clamp(0, 1).permute(1, 2, 0)
+                output = (output.cpu().numpy() * 255).astype(np.uint8)
+                model.to("cpu")
+                return Image.fromarray(output)
 
-                with torch.no_grad():
+            # Tiled upscale for large images
+            out_h, out_w = h * scale, w * scale
+            result = np.zeros((out_h, out_w, c), dtype=np.float32)
+            weight_map = np.zeros((out_h, out_w, c), dtype=np.float32)
+
+            step = tile_size - overlap
+
+            for y in range(0, h, step):
+                for x in range(0, w, step):
+                    # Clamp tile bounds to image edges
+                    y2 = min(y + tile_size, h)
+                    x2 = min(x + tile_size, w)
+                    y1 = max(y2 - tile_size, 0)
+                    x1 = max(x2 - tile_size, 0)
+
+                    tile = img_array[y1:y2, x1:x2]
+                    tensor = torch.from_numpy(tile).permute(2, 0, 1).unsqueeze(0)
+                    tensor = tensor.to(device=device, dtype=model.dtype)
                     out_tile = model(tensor)
+                    out_tile = out_tile.squeeze(0).clamp(0, 1).permute(1, 2, 0).cpu().numpy()
 
-                out_tile = out_tile.squeeze(0).clamp(0, 1).permute(1, 2, 0).cpu().numpy()
-
-                # Place tile in output with 1.0 blending weight
-                oy1, ox1 = y1 * scale, x1 * scale
-                oy2, ox2 = y2 * scale, x2 * scale
-                result[oy1:oy2, ox1:ox2] += out_tile
-                weight_map[oy1:oy2, ox1:ox2] += 1.0
+                    # Place tile in output with 1.0 blending weight
+                    oy1, ox1 = y1 * scale, x1 * scale
+                    oy2, ox2 = y2 * scale, x2 * scale
+                    result[oy1:oy2, ox1:ox2] += out_tile
+                    weight_map[oy1:oy2, ox1:ox2] += 1.0
 
         # Move model back to CPU to free VRAM
         model.to("cpu")

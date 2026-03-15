@@ -66,6 +66,7 @@ class ImageGenerator:
         self._model_name = None
         self._is_single_file = False
         self._interrupt = False
+        self._cached_embeds = None  # (pos_embeds, pos_pooled, neg_embeds, neg_pooled)
 
     def get_available_models(self):
         """List models in models/ — both diffusers folders and single .safetensors files."""
@@ -154,11 +155,13 @@ class ImageGenerator:
         if config.DEVICE == "cuda":
             # VAE tiling: decode/encode large images in overlapping tiles
             # instead of all at once — critical for hires fix at 1536+ px
-            self.pipe.enable_vae_tiling()
+            self.pipe.vae.enable_tiling()
             try:
                 self.pipe.enable_xformers_memory_efficient_attention()
             except Exception:
-                self.pipe.enable_attention_slicing()
+                # SDPA is built into PyTorch 2.0+ and nearly as fast as xformers
+                from diffusers.models.attention_processor import AttnProcessor2_0
+                self.pipe.unet.set_attn_processor(AttnProcessor2_0())
 
         # Build img2img and inpaint pipelines sharing components
         self._build_img2img()
@@ -324,12 +327,13 @@ class ImageGenerator:
 
     def _build_embeddings(self, prompt_text):
         """Build prompt embeddings. Returns (embeds, pooled) for SDXL, (embeds, None) for SD 1.5."""
-        if self._model_type == "sdxl":
-            conditioning, pooled = self.compel_proc(prompt_text)
-            return conditioning, pooled
-        else:
-            conditioning = self.compel_proc(prompt_text)
-            return conditioning, None
+        with torch.inference_mode():
+            if self._model_type == "sdxl":
+                conditioning, pooled = self.compel_proc(prompt_text)
+                return conditioning, pooled
+            else:
+                conditioning = self.compel_proc(prompt_text)
+                return conditioning, None
 
     def load_loras(self, lora_list):
         """Load and fuse one or more LoRAs.
@@ -386,8 +390,20 @@ class ImageGenerator:
         height: int = config.DEFAULT_HEIGHT,
         seed: int = config.DEFAULT_SEED,
         scheduler_name: str = "Euler",
+        offload_encoders: bool = False,
+        keep_encoders_offloaded: bool = False,
     ):
-        """Generate an image from text prompts. Returns a PIL Image."""
+        """Generate an image from text prompts. Returns a PIL Image.
+
+        Args:
+            offload_encoders: If True, move text encoders to CPU after
+                computing embeddings to free VRAM for the UNet diffusion pass.
+                Useful when LoRAs or hires fix push VRAM usage to the limit.
+            keep_encoders_offloaded: If True (and offload_encoders is True),
+                leave text encoders on CPU after generation instead of
+                restoring them.  Used when a hires img2img pass follows
+                immediately and will offload them again anyway.
+        """
         self._interrupt = False
         self.set_scheduler(scheduler_name)
 
@@ -396,6 +412,24 @@ class ImageGenerator:
 
         pos_embeds, pos_pooled = self._build_embeddings(parsed_pos)
         neg_embeds, neg_pooled = self._build_embeddings(parsed_neg if parsed_neg else "")
+
+        # Cache embeddings so the hires img2img pass can reuse them
+        self._cached_embeds = (pos_embeds, pos_pooled, neg_embeds, neg_pooled)
+
+        # Offload text encoders to CPU — embeddings are already computed so
+        # the encoders aren't needed during the diffusion loop.
+        # Also patch _execution_device so diffusers doesn't infer CPU from
+        # the offloaded text encoders (same fix as img2img).
+        if offload_encoders and config.DEVICE == "cuda":
+            self.pipe.text_encoder.to("cpu")
+            if hasattr(self.pipe, "text_encoder_2") and self.pipe.text_encoder_2 is not None:
+                self.pipe.text_encoder_2.to("cpu")
+            self.flush_vram()
+
+            _orig_exec = type(self.pipe)._execution_device.fget
+            type(self.pipe)._execution_device = property(
+                lambda self_pipe: torch.device("cuda")
+            )
 
         generator = None
         if seed >= 0:
@@ -417,6 +451,15 @@ class ImageGenerator:
             kwargs["negative_pooled_prompt_embeds"] = neg_pooled
 
         image = self.pipe(**kwargs).images[0]
+
+        # Restore text encoders and execution device property
+        if offload_encoders and config.DEVICE == "cuda":
+            type(self.pipe)._execution_device = property(_orig_exec)
+            if not keep_encoders_offloaded:
+                self.pipe.text_encoder.to(config.DEVICE)
+                if hasattr(self.pipe, "text_encoder_2") and self.pipe.text_encoder_2 is not None:
+                    self.pipe.text_encoder_2.to(config.DEVICE)
+
         return image
 
     def img2img(
@@ -430,6 +473,7 @@ class ImageGenerator:
         seed: int = config.DEFAULT_SEED,
         scheduler_name: str = "Euler",
         offload_encoders: bool = False,
+        use_cached_embeds: bool = False,
     ):
         """Generate a new image from a source image + text prompts. Returns a PIL Image.
 
@@ -437,17 +481,23 @@ class ImageGenerator:
             offload_encoders: If True, move text encoders to CPU before the
                 diffusion pass and restore them after.  Frees VRAM for the UNet
                 when processing large images (used by hires fix).
+            use_cached_embeds: If True, reuse embeddings cached by a prior
+                generate() call instead of re-encoding the prompts.  Skips
+                the prompt parse and text encoder forward pass entirely.
         """
         self._interrupt = False
         self.set_scheduler(scheduler_name)
 
         source_image = source_image.convert("RGB")
 
-        parsed_pos = parse_weighted_prompt(positive_prompt)
-        parsed_neg = parse_weighted_prompt(negative_prompt) if negative_prompt else ""
-
-        pos_embeds, pos_pooled = self._build_embeddings(parsed_pos)
-        neg_embeds, neg_pooled = self._build_embeddings(parsed_neg if parsed_neg else "")
+        # Reuse cached embeddings from generate() when available
+        if use_cached_embeds and self._cached_embeds is not None:
+            pos_embeds, pos_pooled, neg_embeds, neg_pooled = self._cached_embeds
+        else:
+            parsed_pos = parse_weighted_prompt(positive_prompt)
+            parsed_neg = parse_weighted_prompt(negative_prompt) if negative_prompt else ""
+            pos_embeds, pos_pooled = self._build_embeddings(parsed_pos)
+            neg_embeds, neg_pooled = self._build_embeddings(parsed_neg if parsed_neg else "")
 
         # Offload text encoders to free VRAM for the UNet at high resolution.
         # Embeddings are already computed above so the encoders aren't needed.
@@ -455,13 +505,24 @@ class ImageGenerator:
         # diffusers infers the device from the first nn.Module component — if
         # that happens to be a text encoder now on CPU, the whole pipeline
         # would incorrectly run on CPU and hit a device mismatch.
-        if offload_encoders and config.DEVICE == "cuda":
+        #
+        # Check if encoders are already on CPU (kept offloaded by generate())
+        # to avoid a redundant move.
+        encoders_already_offloaded = (
+            config.DEVICE == "cuda"
+            and next(self.pipe.text_encoder.parameters()).device.type == "cpu"
+        )
+
+        if offload_encoders and config.DEVICE == "cuda" and not encoders_already_offloaded:
             self.pipe.text_encoder.to("cpu")
             if hasattr(self.pipe, "text_encoder_2") and self.pipe.text_encoder_2 is not None:
                 self.pipe.text_encoder_2.to("cpu")
             self.flush_vram()
 
-            # Force the img2img pipe to use CUDA despite text encoders on CPU
+        # Patch _execution_device so diffusers doesn't infer CPU from
+        # the offloaded text encoders.
+        needs_device_patch = offload_encoders or encoders_already_offloaded
+        if needs_device_patch and config.DEVICE == "cuda":
             _orig_exec = type(self.img2img_pipe)._execution_device.fget
             type(self.img2img_pipe)._execution_device = property(
                 lambda self_pipe: torch.device("cuda")
@@ -489,7 +550,7 @@ class ImageGenerator:
         image = self.img2img_pipe(**kwargs).images[0]
 
         # Restore text encoders and execution device property
-        if offload_encoders and config.DEVICE == "cuda":
+        if needs_device_patch and config.DEVICE == "cuda":
             type(self.img2img_pipe)._execution_device = property(_orig_exec)
             self.pipe.text_encoder.to(config.DEVICE)
             if hasattr(self.pipe, "text_encoder_2") and self.pipe.text_encoder_2 is not None:

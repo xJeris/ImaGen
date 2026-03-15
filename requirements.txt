@@ -13,3 +13,4 @@ imageio>=2.31.0
 imageio-ffmpeg>=0.4.9
 bitsandbytes>=0.43.0
 psutil>=5.9.0
+xformers==0.0.29.post3

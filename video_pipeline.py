@@ -200,8 +200,8 @@ class VideoGenerator:
             self.pipe.enable_model_cpu_offload()
 
         # Enable VAE slicing if supported (reduces peak VRAM during decode).
-        if hasattr(self.pipe, "enable_vae_slicing"):
-            self.pipe.enable_vae_slicing()
+        if hasattr(self.pipe.vae, "enable_slicing"):
+            self.pipe.vae.enable_slicing()
 
         # Cache transformer key names for LoRA compatibility checks.
         self._transformer_keys = set(

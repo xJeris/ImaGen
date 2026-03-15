@@ -215,6 +215,11 @@ def generate_image(
     _apply_loras(generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
     actual_seed = _resolve_seed(seed)
 
+    # Offload text encoders when VRAM pressure is high (LoRAs or hires fix)
+    has_loras = (lora1_name and lora1_name != "None") or (lora2_name and lora2_name != "None")
+    hires_active = hires_enable and hires_scale > 1.0
+    heavy = has_loras or hires_active
+
     image = generator.generate(
         positive_prompt=full_prompt,
         negative_prompt=negative_prompt,
@@ -224,13 +229,15 @@ def generate_image(
         height=int(height),
         seed=actual_seed,
         scheduler_name=sampler,
+        offload_encoders=heavy,
+        keep_encoders_offloaded=hires_active,  # skip GPU restore if hires follows
     )
 
     if generator.was_interrupted:
         return None, "Generation stopped."
 
     # Hires Fix: upscale then img2img second pass for real detail
-    if hires_enable and hires_scale > 1.0:
+    if hires_active:
         from PIL import Image
         target_w = int(int(width) * hires_scale)
         target_h = int(int(height) * hires_scale)
@@ -262,7 +269,8 @@ def generate_image(
             guidance_scale=guidance,
             seed=actual_seed,
             scheduler_name=sampler,
-            offload_encoders=True,  # text encoders → CPU during hires pass
+            offload_encoders=True,
+            use_cached_embeds=True,  # reuse embeddings from generate()
         )
 
         if generator.was_interrupted:
@@ -567,16 +575,21 @@ def anim_load_models(base_model, motion_adapter, sparsectrl):
         return f"Failed to load: {e}"
 
 
+ANIMATEDIFF_MAX_FRAMES = 32  # motion adapter positional embedding limit
+
+
 def anim_estimate_vram(duration, fps):
     """Calculate and return a VRAM estimate string for AnimateDiff settings."""
-    num_frames = int(duration) * int(fps)
-    num_frames = max(num_frames, 2)
+    raw_frames = int(duration) * int(fps)
+    num_frames = max(min(raw_frames, ANIMATEDIFF_MAX_FRAMES), 2)
 
     estimated = estimate_animatediff_vram_gb(num_frames)
     available = get_available_vram_gb()
     total = get_total_vram_gb()
 
     text = f"{num_frames} frames | ~{estimated} GB VRAM needed"
+    if raw_frames > ANIMATEDIFF_MAX_FRAMES:
+        text += f" (capped from {raw_frames} — max {ANIMATEDIFF_MAX_FRAMES})"
     if available is not None and total is not None:
         text += f" | {available} GB free / {total} GB total"
         if estimated > available:
@@ -603,7 +616,7 @@ def anim_generate(
     _apply_loras(animatediff_generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
 
     num_frames = int(duration) * int(fps)
-    num_frames = max(num_frames, 2)
+    num_frames = max(min(num_frames, ANIMATEDIFF_MAX_FRAMES), 2)
     actual_seed = _resolve_seed(seed)
 
     # VRAM safety check

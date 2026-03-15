@@ -259,10 +259,10 @@ class AnimateDiffGenerator:
         self.pipe.to(config.DEVICE)
 
         if config.DEVICE == "cuda":
-            try:
-                self.pipe.enable_xformers_memory_efficient_attention()
-            except Exception:
-                self.pipe.enable_attention_slicing()
+            # xformers flash attention is incompatible with AnimateDiff's
+            # temporal attention patterns — use SDPA (PyTorch native) instead.
+            from diffusers.models.attention_processor import AttnProcessor2_0
+            self.pipe.unet.set_attn_processor(AttnProcessor2_0())
 
         # Cache UNet keys for LoRA compatibility checks
         self._unet_keys = set(self.pipe.unet.state_dict().keys())

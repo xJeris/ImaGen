@@ -1,6 +1,7 @@
 @echo off
 cd /d "%~dp0"
 echo Running from: %cd%
+echo Loading...
 call venv\Scripts\activate
 python app.py
 set EC=%errorlevel%

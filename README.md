@@ -8,6 +8,8 @@ A fully self-contained AI image and video generator that runs entirely on your l
 ![PyTorch](https://img.shields.io/badge/PyTorch-CUDA-green)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
+![Screenshot](https://github.com/xJeris/ImaGen/blob/main/sample.png)
+
 ---
 
 ## Features

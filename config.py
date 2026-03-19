@@ -25,6 +25,15 @@ DEFAULT_MODEL_NAME = "sdxl-base"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
 
+# CUDA performance: enable TF32 tensor cores and cuDNN autotuner.
+# TF32 uses the 4090's tensor cores for ~3-5x faster matmul/conv at fp32
+# with negligible precision loss. cuDNN benchmark auto-selects the fastest
+# kernel for each conv shape (small one-time cost on first run).
+if DEVICE == "cuda":
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+
 # Inference defaults
 DEFAULT_STEPS = 30
 DEFAULT_GUIDANCE_SCALE = 7.5

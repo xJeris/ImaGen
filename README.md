@@ -8,8 +8,6 @@ A fully self-contained AI image and video generator that runs entirely on your l
 ![PyTorch](https://img.shields.io/badge/PyTorch-CUDA-green)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-![Screenshot](https://github.com/xJeris/ImaGen/blob/main/sample.png)
-
 ---
 
 ## Features
@@ -52,7 +50,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 
 ```bash
 # Clone the repository
-git clone https://github.com/xJeris/ImaGen.git
+git clone https://github.com/YOUR_USERNAME/ImaGen.git
 cd ImaGen
 
 # Create a virtual environment
@@ -117,7 +115,10 @@ Enable the **Enable Inpainting** checkbox to switch to inpainting mode. This rep
 1. Load an SD 1.5 base model, motion adapter, and SparseControlNet from the `models/animatediff/` folder
 2. Upload a source image
 3. Describe the desired motion (e.g. "wind blowing through hair, gentle swaying")
-4. Click **Animate**
+4. Set **Frames** (2–16) and **Playback FPS** (6–16)
+5. Click **Animate**
+
+AnimateDiff generates at 512x512 (source images are automatically resized). The maximum is 16 frames per generation — this is the trained context length of the motion adapter.
 
 ### Text to Video
 

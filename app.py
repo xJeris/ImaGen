@@ -19,7 +19,8 @@ from video_pipeline import (
 )
 from animatediff_pipeline import (
     AnimateDiffGenerator, ANIMATEDIFF_SCHEDULER_NAMES,
-    ANIMATEDIFF_FPS, ANIMATEDIFF_MIN_FPS, ANIMATEDIFF_MAX_FPS,
+    ANIMATEDIFF_FPS, ANIMATEDIFF_MIN_FPS,
+    ANIMATEDIFF_MAX_CONTEXT,
     estimate_animatediff_vram_gb,
 )
 from preview_files import list_output_files, get_file_info, delete_files
@@ -575,21 +576,20 @@ def anim_load_models(base_model, motion_adapter, sparsectrl):
         return f"Failed to load: {e}"
 
 
-ANIMATEDIFF_MAX_FRAMES = 32  # motion adapter positional embedding limit
+ANIMATEDIFF_MAX_FRAMES = ANIMATEDIFF_MAX_CONTEXT  # trained context length (16)
 
 
-def anim_estimate_vram(duration, fps):
-    """Calculate and return a VRAM estimate string for AnimateDiff settings."""
-    raw_frames = int(duration) * int(fps)
-    num_frames = max(min(raw_frames, ANIMATEDIFF_MAX_FRAMES), 2)
+def anim_estimate_vram(num_frames, fps):
+    """Calculate and return a VRAM estimate + duration string for AnimateDiff."""
+    num_frames = int(num_frames)
+    fps = int(fps)
 
     estimated = estimate_animatediff_vram_gb(num_frames)
     available = get_available_vram_gb()
     total = get_total_vram_gb()
+    duration = num_frames / max(fps, 1)
 
-    text = f"{num_frames} frames | ~{estimated} GB VRAM needed"
-    if raw_frames > ANIMATEDIFF_MAX_FRAMES:
-        text += f" (capped from {raw_frames} — max {ANIMATEDIFF_MAX_FRAMES})"
+    text = f"{num_frames} frames @ {fps} FPS = {duration:.1f}s | ~{estimated} GB VRAM"
     if available is not None and total is not None:
         text += f" | {available} GB free / {total} GB total"
         if estimated > available:
@@ -601,7 +601,7 @@ def anim_estimate_vram(duration, fps):
 
 def anim_generate(
     source_image, positive_prompt, negative_prompt, description,
-    duration, fps, steps, guidance, conditioning_scale, seed, sampler,
+    num_frames, fps, steps, guidance, conditioning_scale, seed, sampler,
     lora1_name, lora1_weight, lora2_name, lora2_weight,
 ):
     global _last_anim_path
@@ -615,8 +615,7 @@ def anim_generate(
     full_prompt = _build_prompt(positive_prompt, description)
     _apply_loras(animatediff_generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
 
-    num_frames = int(duration) * int(fps)
-    num_frames = max(min(num_frames, ANIMATEDIFF_MAX_FRAMES), 2)
+    num_frames = int(num_frames)
     actual_seed = _resolve_seed(seed)
 
     # VRAM safety check
@@ -1472,7 +1471,7 @@ def build_ui():
                                 step=1, label="Inference Steps",
                             )
                             vid_guidance = gr.Slider(
-                                1.0, 20.0, value=5.0,
+                                1.0, 20.0, value=9.0,
                                 step=0.5, label="Guidance Scale",
                             )
                             vid_seed = gr.Number(
@@ -1642,20 +1641,20 @@ def build_ui():
                         )
 
                         with gr.Accordion("Advanced Settings", open=False):
-                            anim_duration = gr.Slider(
-                                1, 5, value=2, step=1,
-                                label="Duration (seconds)",
-                                info="Total frames = duration × FPS",
+                            anim_num_frames = gr.Slider(
+                                2, ANIMATEDIFF_MAX_FRAMES, value=12, step=1,
+                                label="Frames",
+                                info=f"Number of frames to generate (2–{ANIMATEDIFF_MAX_FRAMES}). More frames = longer video.",
                             )
                             anim_fps = gr.Slider(
-                                ANIMATEDIFF_MIN_FPS, ANIMATEDIFF_MAX_FPS,
+                                ANIMATEDIFF_MIN_FPS, 16,
                                 value=ANIMATEDIFF_FPS, step=1,
-                                label="Frames Per Second (FPS)",
-                                info=f"{ANIMATEDIFF_MIN_FPS}–{ANIMATEDIFF_MAX_FPS} FPS. Max: 5s × 30fps = 150 frames",
+                                label="Playback FPS",
+                                info="Playback speed. 12 frames @ 12 FPS = 1s, 16 frames @ 8 FPS = 2s.",
                             )
                             anim_vram_estimate = gr.Textbox(
-                                value=anim_estimate_vram(2, ANIMATEDIFF_FPS),
-                                label="VRAM Estimate",
+                                value=anim_estimate_vram(12, ANIMATEDIFF_FPS),
+                                label="VRAM / Duration Estimate",
                                 interactive=False,
                             )
                             anim_steps = gr.Slider(
@@ -1723,14 +1722,14 @@ def build_ui():
                             label="", interactive=False, show_label=False,
                         )
 
-                anim_duration.change(
+                anim_num_frames.change(
                     fn=anim_estimate_vram,
-                    inputs=[anim_duration, anim_fps],
+                    inputs=[anim_num_frames, anim_fps],
                     outputs=[anim_vram_estimate],
                 )
                 anim_fps.change(
                     fn=anim_estimate_vram,
-                    inputs=[anim_duration, anim_fps],
+                    inputs=[anim_num_frames, anim_fps],
                     outputs=[anim_vram_estimate],
                 )
 
@@ -1749,7 +1748,7 @@ def build_ui():
                     fn=anim_generate,
                     inputs=[
                         anim_source, anim_positive, anim_negative, anim_description,
-                        anim_duration, anim_fps, anim_steps, anim_guidance, anim_conditioning,
+                        anim_num_frames, anim_fps, anim_steps, anim_guidance, anim_conditioning,
                         anim_seed, anim_sampler,
                         anim_lora_1, anim_lora_weight_1, anim_lora_2, anim_lora_weight_2,
                     ],

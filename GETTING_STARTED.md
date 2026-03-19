@@ -267,13 +267,14 @@ You need three components in the `models/animatediff/` folder:
 2. Upload a source image
 3. Enter a motion prompt (e.g. "wind blowing through hair, gentle swaying")
 4. Adjust settings:
-   - **Duration** (1–5 seconds) and **FPS** (6–30, default 12)
-   - **Image Conditioning Scale** (0.0–2.0) — how strongly to follow the source image
+   - **Frames** (2–16) — number of frames to generate. 16 is the maximum (trained context length of the motion adapter).
+   - **Playback FPS** (6–16, default 12) — controls playback speed. 12 frames @ 12 FPS = 1 second, 16 frames @ 8 FPS = 2 seconds.
+   - **Image Conditioning Scale** (0.0–2.0) — how strongly to follow the source image. Higher = more faithful to the source.
    - **Inference Steps** (default 25) — more = higher quality
-   - **VRAM Estimate** — shows estimated vs available VRAM in real-time
+   - **VRAM / Duration Estimate** — shows frame count, duration, and VRAM usage in real-time
 5. Click **Animate**
 
-Output is saved as MP4 at 12fps (adjustable from 6–30fps). Dual LoRA support is available for SD 1.5-compatible LoRAs. Like WAN video, AnimateDiff uses single-pass diffusion with chunked VAE decode for VRAM safety.
+Source images are automatically resized to 512x512 (the native resolution for SD 1.5). Output is saved as MP4. Dual LoRA support is available for SD 1.5-compatible LoRAs. Like WAN video, AnimateDiff uses single-pass diffusion with chunked VAE decode for VRAM safety.
 
 ## Text to Video
 

@@ -6,7 +6,7 @@ import warnings
 import numpy as np
 import torch
 from diffusers import AnimateDiffSparseControlNetPipeline
-from diffusers.models import AutoencoderKL, MotionAdapter, SparseControlNetModel
+from diffusers.models import MotionAdapter, SparseControlNetModel
 from diffusers import (
     EulerDiscreteScheduler,
     EulerAncestralDiscreteScheduler,
@@ -17,6 +17,7 @@ from diffusers import (
 from safetensors import safe_open
 
 import config
+
 
 # Schedulers compatible with AnimateDiff (SD 1.5 based).
 ANIMATEDIFF_SCHEDULER_MAP = {
@@ -31,7 +32,12 @@ ANIMATEDIFF_SCHEDULER_NAMES = list(ANIMATEDIFF_SCHEDULER_MAP.keys())
 # AnimateDiff FPS defaults.
 ANIMATEDIFF_FPS = 12
 ANIMATEDIFF_MIN_FPS = 6
-ANIMATEDIFF_MAX_FPS = 30
+
+# AnimateDiff was trained on 16-frame contexts. Going beyond 16 causes noise
+# because the positional embeddings at positions 16-31 were never trained.
+# Other tools (ComfyUI, A1111) enforce 16-frame context and use sliding window
+# overlap for longer videos.
+ANIMATEDIFF_MAX_CONTEXT = 16
 
 
 def estimate_animatediff_vram_gb(num_frames: int, width: int = 512, height: int = 512) -> float:
@@ -50,18 +56,6 @@ def estimate_animatediff_vram_gb(num_frames: int, width: int = 512, height: int 
     per_frame_gb = 0.12
     peak_gb = base_gb + num_frames * per_frame_gb
     return round(peak_gb, 1)
-
-
-def _find_component(base_dir, name):
-    """Find a subfolder or safetensors file matching *name* inside base_dir."""
-    folder = base_dir / name
-    if folder.is_dir():
-        return folder
-    # Also accept a single safetensors file with the name prefix
-    for f in base_dir.iterdir():
-        if f.is_file() and f.stem.startswith(name) and f.suffix == ".safetensors":
-            return f
-    return None
 
 
 class AnimateDiffGenerator:
@@ -258,6 +252,10 @@ class AnimateDiffGenerator:
 
         self.pipe.to(config.DEVICE)
 
+        # Enable VAE slicing to reduce peak VRAM during decode
+        if hasattr(self.pipe.vae, "enable_slicing"):
+            self.pipe.vae.enable_slicing()
+
         if config.DEVICE == "cuda":
             # xformers flash attention is incompatible with AnimateDiff's
             # temporal attention patterns — use SDPA (PyTorch native) instead.
@@ -372,7 +370,13 @@ class AnimateDiffGenerator:
         if entry is None:
             return
         cls, kwargs = entry
-        self.pipe.scheduler = cls.from_config(self.pipe.scheduler.config, **kwargs)
+        # AnimateDiff requires linear beta schedule — the base SD 1.5 model
+        # ships with scaled_linear which causes noise/artifacts in animations.
+        self.pipe.scheduler = cls.from_config(
+            self.pipe.scheduler.config,
+            beta_schedule="linear",
+            **kwargs,
+        )
 
     # ------------------------------------------------------------------
     # Interrupt support
@@ -427,13 +431,16 @@ class AnimateDiffGenerator:
         w = (w // 8) * 8
         h = (h // 8) * 8
         # Clamp to reasonable range for SD 1.5
-        w = max(256, min(w, 768))
-        h = max(256, min(h, 768))
+        # SD 1.5 was trained at 512x512 — larger sizes cause massive slowdowns
+        # (768x768 is 2.25x more pixels = 2.25x slower per step)
+        w = max(256, min(w, 512))
+        h = max(256, min(h, 512))
         source_image = source_image.resize((w, h))
 
         generator = None
         if seed >= 0:
-            generator = torch.Generator(device="cpu").manual_seed(seed)
+            gen_device = config.DEVICE if config.DEVICE == "cuda" else "cpu"
+            generator = torch.Generator(device=gen_device).manual_seed(seed)
 
         try:
             output = self.pipe(

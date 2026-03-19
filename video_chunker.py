@@ -4,8 +4,6 @@
 # ============================================================
 
 import gc
-from pathlib import Path
-import tempfile
 import torch
 
 
@@ -152,23 +150,20 @@ def _decode_animatediff_chunked(video_generator, latents, vae, vae_batch_frames,
         )
 
         with torch.inference_mode():
-            decoded = vae.decode(latent_2d).sample
+            decoded = vae.decode(latent_2d, return_dict=False)[0]
 
-        # Convert to float32 for PIL conversion (matches diffusers behavior)
-        decoded = decoded.float()
-        # decoded shape: [batch_count, 3, H_out, W_out]
-        # Convert each frame to PIL
-        for i in range(decoded.shape[0]):
-            frame_tensor = decoded[i]  # [3, H, W]
-            # Clamp to [0, 1] and convert to uint8
-            frame_tensor = (frame_tensor + 1) / 2  # [-1, 1] -> [0, 1]
-            frame_tensor = frame_tensor.clamp(0, 1)
-            frame_np = (frame_tensor.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-            all_frames.append(Image.fromarray(frame_np))
+        # Batch convert: [-1, 1] -> [0, 255] uint8 on GPU, single CPU transfer
+        decoded = ((decoded + 1) * 0.5).clamp_(0, 1)
+        # [batch, 3, H, W] -> [batch, H, W, 3], single .cpu() call
+        frames_np = (decoded.permute(0, 2, 3, 1).mul_(255)
+                     .to(torch.uint8).cpu().numpy())
+        for i in range(frames_np.shape[0]):
+            all_frames.append(Image.fromarray(frames_np[i]))
 
-        del latent_slice, latent_2d, decoded
-        _flush_vram()
+        del latent_slice, latent_2d, decoded, frames_np
 
+    # Single flush after all batches instead of per-batch (avoids CUDA stalls)
+    _flush_vram()
     return all_frames
 
 
@@ -194,10 +189,6 @@ def generate_video_chunked(
     controlnet_conditioning_scale=1.0,
     # VAE decode batch size (temporal frames per batch)
     vae_batch_frames=8,
-    # Legacy params (unused, kept for API compat)
-    overlap=None,
-    chunk_size=None,
-    temp_dir=None,
 ):
     """
     VRAM-safe video generation using single-pass diffusion + chunked VAE decode.

@@ -2068,12 +2068,8 @@ def build_ui():
                 browse_results_state = gr.State([])  # holds full result dicts
                 browse_cursor_state = gr.State(None)  # next page cursor
                 browse_page_num_state = gr.State(1)  # display page number
-                browse_results_display = gr.Dataframe(
-                    headers=["Name", "Type", "Size", "Version"],
-                    datatype=["str", "str", "str", "str"],
-                    interactive=False,
-                    label="Results (click a row to select)",
-                    row_count=(20, "dynamic"),
+                browse_results_display = gr.HTML(
+                    value="<div style='color:#888; padding:1em;'>Click Search to load results.</div>",
                 )
 
                 with gr.Row():
@@ -2088,8 +2084,8 @@ def build_ui():
                 browse_selected_idx = gr.Number(
                     value=-1, visible=False, elem_id="browse_selected_idx",
                 )
-                browse_model_info = gr.Textbox(
-                    label="Selected", interactive=False, max_lines=1,
+                browse_model_info = gr.HTML(
+                    value='<div id="browse_model_info_display" style="padding:8px 12px; min-height:24px; border:1px solid #444; border-radius:6px; color:#ccc; background:#1a1a1a; font-size:13px;">Click a tile to select a model</div>',
                 )
                 with gr.Row():
                     browse_download_btn = gr.Button(
@@ -2121,6 +2117,11 @@ def build_ui():
                         full_name_escaped = r["name"].replace('"', "&quot;")
                         model_type_label = r.get("type", "")
                         size = r.get("file_size_str", "")
+                        # Build info string for direct JS display
+                        info = f"{r['name']} ({r.get('type','')}) — {r.get('filename','')} — {r.get('file_size_str','')}"
+                        if not r.get("download_url"):
+                            info += " | ⚠ May require API key"
+                        info_escaped = info.replace("'", "\\'").replace('"', "&quot;")
                         if img_url:
                             img_tag = (
                                 f'<img src="{img_url}" '
@@ -2134,7 +2135,7 @@ def build_ui():
                                 'justify-content:center; color:#666;">No Preview</div>'
                             )
                         tiles.append(
-                            f'<div class="browse-tile" data-idx="{idx}" '
+                            f'<div class="browse-tile" data-idx="{idx}" data-info="{info_escaped}" '
                             f'style="width:150px; border:1px solid #444; border-radius:6px; '
                             f'overflow:hidden; background:#1a1a1a; cursor:pointer; '
                             f'transition: border-color 0.15s;" '
@@ -2142,8 +2143,9 @@ def build_ui():
                             f'onmouseout="if(!this.classList.contains(\'selected\'))this.style.borderColor=\'#444\'" '
                             f'onclick="document.querySelectorAll(\'.browse-tile\').forEach(t=>{{t.classList.remove(\'selected\');t.style.borderColor=\'#444\'}});'
                             f'this.classList.add(\'selected\');this.style.borderColor=\'#7c3aed\';'
-                            f'let inp=document.querySelector(\'#browse_selected_idx input\');'
-                            f'if(inp){{inp.value={idx};inp.dispatchEvent(new Event(\'input\',{{bubbles:true}}));}}">'
+                            f'window._browseSelectedIdx={idx};'
+                            f'var el=document.getElementById(\'browse_model_info_display\');'
+                            f'if(el){{el.textContent=this.dataset.info;}}">'
                             f'{img_tag}'
                             f'<div style="padding:6px; font-size:11px;">'
                             f'<div style="font-weight:600; white-space:nowrap; overflow:hidden; '
@@ -2192,17 +2194,6 @@ def build_ui():
                     if page_num <= 1:
                         return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, 1)
                     return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, 1)
-
-                def _browse_on_select(idx, results):
-                    """Show file info when a tile is clicked."""
-                    idx = int(idx)
-                    if idx < 0 or not results or idx >= len(results):
-                        return ""
-                    r = results[idx]
-                    info = f"{r['name']} ({r['type']}) — {r['filename']} — {r['file_size_str']}"
-                    if not r.get("download_url"):
-                        info += " | ⚠ May require API key"
-                    return info
 
                 def _browse_download_selected(results, selected_idx, api_key_input):
                     no_update = gr.update()
@@ -2274,18 +2265,15 @@ def build_ui():
                     outputs=_search_outputs,
                 )
 
-                # Wire tile selection → show file info
-                browse_selected_idx.change(
-                    fn=_browse_on_select,
-                    inputs=[browse_selected_idx, browse_results_state],
-                    outputs=[browse_model_info],
-                )
-
                 # Wire download (also refreshes model dropdowns on success)
+                # Uses js parameter to inject window._browseSelectedIdx since
+                # Gradio 5's Svelte reactivity doesn't support programmatic
+                # value setting on hidden components from inline JS.
                 browse_download_btn.click(
                     fn=_browse_download_selected,
                     inputs=[browse_results_state, browse_selected_idx, browse_api_key],
                     outputs=[browse_download_status, model_dropdown, i2i_model_dropdown],
+                    js="(results, idx, key) => [results, window._browseSelectedIdx ?? -1, key]",
                 )
 
                 # Wire API key save

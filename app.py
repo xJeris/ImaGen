@@ -2025,7 +2025,7 @@ def build_ui():
                 )
 
             # === Model Browser tab (ONLINE) ===
-            with gr.Tab("Model Browser"):
+            with gr.Tab("Model Browser") as browse_tab:
                 gr.Markdown(
                     "### \U0001F310 Online — CivitAI Model Browser\n"
                     "This tab connects to the internet to search and download models from CivitAI. "
@@ -2295,11 +2295,17 @@ def build_ui():
                     outputs=[browse_api_key],
                 )
 
-                # Auto-load results when the page first opens
+                # Auto-load results when the browser tab is first opened
                 def _browse_initial_load():
-                    return _browse_search_fresh("", "All", "All", "Show All", "Most Downloaded", "20")
+                    try:
+                        return _browse_search_fresh("", "All", "All", "Show All", "Most Downloaded", "20")
+                    except Exception:
+                        return (
+                            [], "<div style='color:#888; padding:1em;'>Click Search to load results.</div>",
+                            "Ready", None, 1, "Page 1",
+                        )
 
-                app.load(
+                browse_tab.select(
                     fn=_browse_initial_load,
                     outputs=_search_outputs,
                 )

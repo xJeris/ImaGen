@@ -48,6 +48,19 @@ The app auto-detects whether a model is SDXL or SD 1.5 and adjusts its pipeline 
 
 > **Note:** SD 1.5 models generate at 512x512 natively. SDXL models generate at 1024x1024. Adjust the width/height sliders to match.
 
+### Model Browser
+
+You can also search and download models directly from CivitAI using the **Model Browser** tab:
+
+1. Enter a search query or browse the default results
+2. Use the filters to narrow by model type (Checkpoint, LORA), base model (SDXL, SD 1.5, Pony, etc.), and content rating
+3. Click a tile to select it — the model name, type, and file size appear in the Selected box
+4. Click **Download** — the file is saved to `models/` (for checkpoints) or `loras/` (for LoRAs), and the model dropdowns refresh automatically
+
+Some restricted models require a CivitAI API key. Expand the **API Key** section at the bottom of the browser tab to enter and save your key. The key is stored in `~/.imagen/civitai_key.txt` (outside the project folder).
+
+> **Note:** The Model Browser is the only feature in ImaGen that requires an internet connection. All other functionality works fully offline.
+
 ### Model Compatibility
 
 ImaGen supports **SD 1.5** and **SDXL** architectures for image generation, and **WAN** for video generation. Models based on other architectures (Flux, SD 3, DiT-based) are not currently supported.
@@ -398,6 +411,7 @@ ImaGen/
 ├── video_pipeline.py       # Video model loading and inference (WAN 2.1)
 ├── video_chunker.py        # VRAM-safe video generation (single-pass diffusion + chunked VAE decode)
 ├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
+├── civitai_browser.py      # CivitAI model search and download
 ├── preview_files.py        # Preview Files tab backend (gallery, thumbnails, delete)
 ├── upscaler.py             # Upscaler loading and inference (spandrel)
 ├── prompt_parser.py        # Weighted prompt syntax

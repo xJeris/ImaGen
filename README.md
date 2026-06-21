@@ -25,6 +25,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 - **Hires Fix** — Two-pass generation: base render → AI upscale → img2img refinement for sharper detail
 - **AI Upscalers** — Post-process upscaling with Real-ESRGAN, SwinIR, ESRGAN, and other models via [Spandrel](https://github.com/chaiNNer-org/spandrel)
 - **Preview Files** — Browse, preview, and bulk delete generated images and videos from the outputs folder
+- **Model Browser** — Search and download models and LoRAs from CivitAI directly within the UI
 - **Prompt Profiles** — Save and load prompt presets (positive + negative) across all tabs
 - **Multiple Samplers** — Euler, Euler Ancestral, DPM++ 2M Karras, DPM++ SDE Karras, DDIM, UniPC
 - **Hot-Swap Models** — Switch between models from the UI without restarting
@@ -52,7 +53,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/ImaGen.git
+git clone https://github.com/xJeris/ImaGen.git
 cd ImaGen
 
 # Create a virtual environment
@@ -141,6 +142,19 @@ The **Preview Files** tab lets you browse all saved images and videos in the `ou
 4. To delete files, check **Select for Delete** — a checklist appears with all filenames
 5. Check the files you want to remove and click **Delete Selected**
 
+### Model Browser
+
+The **Model Browser** tab lets you search and download models directly from CivitAI:
+
+1. Enter a search query or browse the default results
+2. Filter by model type (Checkpoint, LORA), base model (SDXL, SD 1.5, etc.), and content rating
+3. Click a tile to select it — file details appear in the Selected box
+4. Click **Download** to save the model to the appropriate folder (`models/` or `loras/`)
+
+Some models require a CivitAI API key — expand the **API Key** section to enter and save your key.
+
+> **Note:** This is the only feature in ImaGen that requires an internet connection.
+
 ### Hires Fix
 
 A two-pass approach for high-resolution detail:
@@ -211,6 +225,7 @@ ImaGen/
 ├── video_pipeline.py       # Video generation pipeline (WAN 2.1)
 ├── video_chunker.py        # VRAM-safe video generation (single-pass diffusion + chunked VAE decode)
 ├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
+├── civitai_browser.py      # CivitAI model search and download
 ├── preview_files.py        # Preview Files tab backend (gallery, thumbnails, delete)
 ├── upscaler.py             # AI upscaler inference (Spandrel)
 ├── prompt_parser.py        # Weighted prompt syntax parser

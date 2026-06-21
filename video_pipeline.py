@@ -16,6 +16,15 @@ from safetensors import safe_open
 
 import config
 
+def _can_torch_compile():
+    """Check if torch.compile with inductor backend is usable (requires Triton)."""
+    try:
+        import triton  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 # Schedulers compatible with WAN's flow-matching prediction type.
 # Each must be instantiated with the original scheduler's config to inherit
 # flow_shift, prediction_type, etc.
@@ -46,27 +55,26 @@ def estimate_video_vram_gb(num_frames: int, width: int = 832, height: int = 480,
     fragmentation.
     """
     # --- Diffusion pass (transformer) ---
-    # Base VRAM: model weights sitting on GPU.
+    # Base VRAM: model weights + text encoder + scheduler state on GPU.
     #   1.3B bf16 ≈ 5.0 GB,  14B 4-bit + CPU offload ≈ 7.0 GB
-    # Per-frame overhead: latent channels × spatial dims × bytes, plus
-    #   intermediate activations.  Empirically ~0.06 GB/frame for 1.3B
-    #   and ~0.05 GB/frame for 14B (offload keeps transformer on CPU between
-    #   steps, so only latents + one active component sit on GPU).
+    # Per-frame overhead: latent tensor scales with temporal frames (4x compressed)
+    #   at 832x480 in bf16: each video frame ≈ 0.02 GB in latent space plus
+    #   transformer activation overhead.
     if is_lite:
         base_gb = 5.0
-        per_frame_gb = 0.06
+        per_frame_gb = 0.025
     else:
         base_gb = 7.0
-        per_frame_gb = 0.05
+        per_frame_gb = 0.02
 
     diffusion_gb = base_gb + num_frames * per_frame_gb
 
     # --- VAE decode pass ---
-    # The VAE decodes the full latent volume into pixel frames.
-    # With VAE slicing enabled the peak is lower, but it still scales
-    # roughly with the number of frames.
-    # Empirical: ~2.5 GB base + ~0.04 GB/frame (with slicing).
-    vae_decode_gb = 2.5 + num_frames * 0.04
+    # With chunked decode (8 latent frames per batch) + VAE slicing,
+    # peak VRAM is bounded by a single batch, not total frame count.
+    # Base ~2.0 GB for VAE weights + one decode batch.
+    # Per-frame scaling is minimal since we decode in fixed-size chunks.
+    vae_decode_gb = 2.0 + num_frames * 0.015
 
     # For 1.3B everything is on GPU so diffusion + VAE overlap a bit;
     # peak ≈ max(diffusion, model_base + vae_decode).
@@ -203,6 +211,12 @@ class VideoGenerator:
         if hasattr(self.pipe.vae, "enable_slicing"):
             self.pipe.vae.enable_slicing()
 
+        # NOTE: torch.compile is intentionally disabled for video generation.
+        # Even in "default" mode, the inductor backend allocates significant extra
+        # VRAM for intermediate buffers during compilation and execution, which risks
+        # OOM on 24GB cards where the model + latents already use most of the budget.
+        # The speed gain (~15-30%) is not worth the stability risk.
+
         # Cache transformer key names for LoRA compatibility checks.
         self._transformer_keys = set(
             n for n, _ in self.pipe.transformer.named_parameters()
@@ -303,8 +317,11 @@ class VideoGenerator:
         cls = VIDEO_SCHEDULER_MAP.get(scheduler_name)
         if cls is None:
             return
-        # from_config inherits flow_shift, prediction_type, etc. from the original
-        self.pipe.scheduler = cls.from_config(self.pipe.scheduler.config)
+        # from_config inherits flow_shift, prediction_type, etc. from the original.
+        # Suppress warnings about unused keys (e.g. UniPC keys when switching to Euler).
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*not expected.*")
+            self.pipe.scheduler = cls.from_config(self.pipe.scheduler.config)
 
     def interrupt(self):
         """Signal the pipeline to stop after the current step."""
@@ -365,7 +382,8 @@ class VideoGenerator:
         )
 
         try:
-            output = self.pipe(**kwargs)
+            with torch.inference_mode():
+                output = self.pipe(**kwargs)
         except self._Interrupted:
             self._flush_vram()
             return None

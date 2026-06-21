@@ -1,0 +1,51 @@
+# Virtual environment
+venv/
+
+# Model files (large binary files)
+models/
+upscalers/
+loras/
+
+# Generated outputs
+outputs/
+
+# Training data and results
+training/
+
+# User profiles
+profiles/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude Code local settings
+.claude/
+
+# User prompt defaults
+default_positive.txt
+default_negative.txt
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+.env.*

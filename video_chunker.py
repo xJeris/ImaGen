@@ -107,8 +107,13 @@ def _decode_wan_chunked(video_generator, latents, vae, vae_batch_frames,
         all_frames.extend(frames_batch)
 
         del latent_slice, video_slice, frames_batch
-        _flush_vram()
+        # Keep empty_cache per-batch to free VRAM for next batch (OOM safety),
+        # but skip gc.collect() here — it's expensive (~50-100ms) and the tensors
+        # are already del'd. Do a single gc.collect() after all batches.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
+    gc.collect()
     return all_frames
 
 

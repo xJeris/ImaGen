@@ -11,7 +11,7 @@ import torch
 import config
 from pipeline import ImageGenerator, SCHEDULER_NAMES
 from upscaler import Upscaler
-from training import LoRATrainer
+# LoRATrainer imported lazily on first use (saves ~1-2s startup from peft/torchvision/datasets)
 from video_chunker import generate_video_chunked
 from video_pipeline import (
     VideoGenerator, WAN_FPS, MIN_FPS, MAX_FPS, VIDEO_SCHEDULER_NAMES,
@@ -24,6 +24,15 @@ from animatediff_pipeline import (
     estimate_animatediff_vram_gb,
 )
 from preview_files import list_output_files, get_file_info, delete_files
+from civitai_browser import (
+    search_models as civitai_search,
+    download_model as civitai_download,
+    get_download_dir as civitai_dest_dir,
+    get_api_key as civitai_get_key,
+    save_api_key as civitai_save_key,
+    SUPPORTED_BASE_MODELS,
+    CONTENT_FILTERS,
+)
 
 generator = ImageGenerator()
 video_generator = VideoGenerator()
@@ -212,6 +221,13 @@ def generate_image(
 ):
     global _last_image
 
+    # Auto-load model on first generation if none loaded yet
+    if generator.pipe is None:
+        models = list_models()
+        if not models:
+            raise gr.Error("No models found in models/ directory.")
+        generator.load_model(models[0], progress_callback=print)
+
     full_prompt = _build_prompt(positive_prompt, description)
     _apply_loras(generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
     actual_seed = _resolve_seed(seed)
@@ -309,6 +325,13 @@ def img2img_generate(
 ):
     global _last_image
 
+    # Auto-load model on first generation if none loaded yet
+    if generator.pipe is None:
+        models = list_models()
+        if not models:
+            raise gr.Error("No models found in models/ directory.")
+        generator.load_model(models[0], progress_callback=print)
+
     full_prompt = _build_prompt(positive_prompt, description)
     _apply_loras(generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
     actual_seed = _resolve_seed(seed)
@@ -384,6 +407,7 @@ def start_training(image_dir, lora_name, steps, learning_rate, rank):
     if generator._model_type != "sdxl":
         raise gr.Error("LoRA training currently requires an SDXL model.")
 
+    from training import LoRATrainer
     trainer = LoRATrainer(generator)
     log_output = []
 
@@ -440,6 +464,9 @@ def video_estimate_vram(duration, fps):
 
     is_lite = video_generator._model_name and "1.3B" in video_generator._model_name
     estimated = estimate_video_vram_gb(num_frames, is_lite=is_lite)
+    # Flush allocator cache before checking free VRAM for accurate reading
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     available = get_available_vram_gb()
     total = get_total_vram_gb()
 
@@ -476,6 +503,12 @@ def video_generate(
 
     # VRAM safety check — compare against free VRAM (accounts for loaded
     # LoRAs, other models, and any other GPU consumers).
+    # Flush before checking so we get accurate free count (not stale allocator caches).
+    import gc as _gc
+    _gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     is_lite = video_generator._model_name and "1.3B" in video_generator._model_name
     estimated_vram = estimate_video_vram_gb(num_frames, is_lite=is_lite)
     available_vram = get_available_vram_gb()
@@ -1040,7 +1073,7 @@ def build_ui():
                         scale=2,
                     )
                     model_status = gr.Textbox(
-                        value=f"Loaded: {generator._model_name} ({generator._model_type})",
+                        value=f"Loaded: {generator._model_name} ({generator._model_type})" if generator.pipe else "No model loaded — select one above or click Generate",
                         label="Status",
                         interactive=False,
                         scale=2,
@@ -1467,7 +1500,7 @@ def build_ui():
                                 interactive=False,
                             )
                             vid_steps = gr.Slider(
-                                1, 100, value=30,
+                                1, 100, value=25,
                                 step=1, label="Inference Steps",
                             )
                             vid_guidance = gr.Slider(
@@ -1991,6 +2024,286 @@ def build_ui():
                     ],
                 )
 
+            # === Model Browser tab (ONLINE) ===
+            with gr.Tab("Model Browser"):
+                gr.Markdown(
+                    "### \U0001F310 Online — CivitAI Model Browser\n"
+                    "This tab connects to the internet to search and download models from CivitAI. "
+                    "All other tabs remain fully offline."
+                )
+
+                with gr.Row():
+                    browse_query = gr.Textbox(
+                        label="Search", placeholder="e.g. realistic, anime, landscape...",
+                        scale=4, max_lines=1,
+                    )
+                    browse_type = gr.Dropdown(
+                        choices=["All", "Checkpoint", "LORA"],
+                        value="All", label="Type", scale=1,
+                    )
+                    browse_base_model = gr.Dropdown(
+                        choices=SUPPORTED_BASE_MODELS,
+                        value="All", label="Base Model", scale=1,
+                    )
+                    browse_content = gr.Dropdown(
+                        choices=CONTENT_FILTERS,
+                        value="Show All", label="Content", scale=1,
+                    )
+                    browse_sort = gr.Dropdown(
+                        choices=["Most Downloaded", "Highest Rated", "Newest"],
+                        value="Most Downloaded", label="Sort", scale=1,
+                    )
+                    browse_btn = gr.Button("Search", variant="primary", scale=1)
+
+                with gr.Row():
+                    browse_status = gr.Textbox(
+                        label="Status", interactive=False, max_lines=1, scale=2,
+                    )
+                    browse_per_page = gr.Dropdown(
+                        choices=["20", "50", "100"],
+                        value="20", label="Per Page", scale=1,
+                    )
+
+                # Results as a selectable list (name, type, size)
+                browse_results_state = gr.State([])  # holds full result dicts
+                browse_cursor_state = gr.State(None)  # next page cursor
+                browse_page_num_state = gr.State(1)  # display page number
+                browse_results_display = gr.Dataframe(
+                    headers=["Name", "Type", "Size", "Version"],
+                    datatype=["str", "str", "str", "str"],
+                    interactive=False,
+                    label="Results (click a row to select)",
+                    row_count=(20, "dynamic"),
+                )
+
+                with gr.Row():
+                    browse_prev_btn = gr.Button("← Previous", size="sm")
+                    browse_page_label = gr.Textbox(
+                        value="Page 1", interactive=False, max_lines=1,
+                        show_label=False, scale=1,
+                    )
+                    browse_next_btn = gr.Button("Next →", size="sm")
+
+                gr.Markdown("---")
+                browse_selected_idx = gr.Number(
+                    value=-1, visible=False, elem_id="browse_selected_idx",
+                )
+                browse_model_info = gr.Textbox(
+                    label="Selected", interactive=False, max_lines=1,
+                )
+                with gr.Row():
+                    browse_download_btn = gr.Button(
+                        "Download", variant="primary", scale=1,
+                    )
+                    browse_download_status = gr.Textbox(
+                        label="Download Status", interactive=False, scale=3,
+                    )
+
+                with gr.Accordion("API Key (optional, for restricted models)", open=False):
+                    browse_api_key = gr.Textbox(
+                        value=civitai_get_key(),
+                        label="CivitAI API Key",
+                        type="password",
+                        placeholder="Paste your CivitAI API key here...",
+                    )
+                    browse_save_key_btn = gr.Button("Save Key", size="sm")
+
+                # ── Browser event handlers ──
+
+                def _build_tiles_html(results):
+                    """Render results as a grid of clickable preview tiles."""
+                    if not results:
+                        return "<div style='color:#888; padding:1em;'>No results found.</div>"
+                    tiles = []
+                    for idx, r in enumerate(results):
+                        img_url = r.get("preview_url") or ""
+                        name = r["name"][:40]
+                        full_name_escaped = r["name"].replace('"', "&quot;")
+                        model_type_label = r.get("type", "")
+                        size = r.get("file_size_str", "")
+                        if img_url:
+                            img_tag = (
+                                f'<img src="{img_url}" '
+                                f'style="width:100%; height:140px; object-fit:cover; '
+                                f'border-radius:6px 6px 0 0;" loading="lazy" />'
+                            )
+                        else:
+                            img_tag = (
+                                '<div style="width:100%; height:140px; background:#333; '
+                                'border-radius:6px 6px 0 0; display:flex; align-items:center; '
+                                'justify-content:center; color:#666;">No Preview</div>'
+                            )
+                        tiles.append(
+                            f'<div class="browse-tile" data-idx="{idx}" '
+                            f'style="width:150px; border:1px solid #444; border-radius:6px; '
+                            f'overflow:hidden; background:#1a1a1a; cursor:pointer; '
+                            f'transition: border-color 0.15s;" '
+                            f'onmouseover="this.style.borderColor=\'#7c3aed\'" '
+                            f'onmouseout="if(!this.classList.contains(\'selected\'))this.style.borderColor=\'#444\'" '
+                            f'onclick="document.querySelectorAll(\'.browse-tile\').forEach(t=>{{t.classList.remove(\'selected\');t.style.borderColor=\'#444\'}});'
+                            f'this.classList.add(\'selected\');this.style.borderColor=\'#7c3aed\';'
+                            f'let inp=document.querySelector(\'#browse_selected_idx input\');'
+                            f'if(inp){{inp.value={idx};inp.dispatchEvent(new Event(\'input\',{{bubbles:true}}));}}">'
+                            f'{img_tag}'
+                            f'<div style="padding:6px; font-size:11px;">'
+                            f'<div style="font-weight:600; white-space:nowrap; overflow:hidden; '
+                            f'text-overflow:ellipsis; color:#eee;" title="{full_name_escaped}">{name}</div>'
+                            f'<div style="color:#888; margin-top:2px;">{model_type_label} · {size}</div>'
+                            f'</div></div>'
+                        )
+                    grid = (
+                        '<div style="display:flex; flex-wrap:wrap; gap:10px; padding:8px 0;">'
+                        + "".join(tiles)
+                        + '</div>'
+                    )
+                    return grid
+
+                def _browse_do_search(query, model_type, base_model, content, sort, per_page, cursor, page_num):
+                    try:
+                        results, next_cursor = civitai_search(
+                            query=query, model_type=model_type, sort=sort,
+                            limit=int(per_page),
+                            base_model=base_model, content_filter=content,
+                            cursor=cursor,
+                        )
+                    except Exception as e:
+                        return (
+                            [], "<div style='color:red;'>Search failed: " + str(e) + "</div>",
+                            f"Search failed: {e}", None, page_num,
+                            f"Page {page_num}",
+                        )
+                    tiles_html = _build_tiles_html(results)
+                    has_more = " →" if next_cursor else " (last page)"
+                    status = f"{len(results)} results — page {page_num}{has_more}"
+                    return (
+                        results, tiles_html, status, next_cursor, page_num,
+                        f"Page {page_num}",
+                    )
+
+                def _browse_search_fresh(query, model_type, base_model, content, sort, per_page):
+                    return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, 1)
+
+                def _browse_next(query, model_type, base_model, content, sort, per_page, cursor, page_num):
+                    if not cursor:
+                        return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, page_num)
+                    return _browse_do_search(query, model_type, base_model, content, sort, per_page, cursor, page_num + 1)
+
+                def _browse_prev(query, model_type, base_model, content, sort, per_page, cursor, page_num):
+                    if page_num <= 1:
+                        return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, 1)
+                    return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, 1)
+
+                def _browse_on_select(idx, results):
+                    """Show file info when a tile is clicked."""
+                    idx = int(idx)
+                    if idx < 0 or not results or idx >= len(results):
+                        return ""
+                    r = results[idx]
+                    info = f"{r['name']} ({r['type']}) — {r['filename']} — {r['file_size_str']}"
+                    if not r.get("download_url"):
+                        info += " | ⚠ May require API key"
+                    return info
+
+                def _browse_download_selected(results, selected_idx, api_key_input):
+                    no_update = gr.update()
+                    selected_idx = int(selected_idx)
+                    if not results or selected_idx < 0 or selected_idx >= len(results):
+                        return "Click a tile to select a model first.", no_update, no_update
+                    selected = results[selected_idx]
+                    if not selected["download_url"]:
+                        return "No download URL available for this model.", no_update, no_update
+
+                    dest_dir = civitai_dest_dir(selected["type"])
+                    filename = selected["filename"]
+                    if not filename:
+                        filename = f"{selected['name']}.safetensors"
+
+                    api_key = api_key_input.strip() if api_key_input else civitai_get_key()
+
+                    try:
+                        path = civitai_download(
+                            download_url=selected["download_url"],
+                            dest_dir=str(dest_dir),
+                            filename=filename,
+                            api_key=api_key or None,
+                        )
+                        dest_type = "loras" if selected["type"] == "LORA" else "models"
+                        # Refresh model dropdowns so the new file appears immediately
+                        model_choices = gr.update(choices=list_models())
+                        return f"Downloaded to {dest_type}/{filename}", model_choices, model_choices
+                    except Exception as e:
+                        err_str = str(e)
+                        if "401" in err_str or "403" in err_str:
+                            return (
+                                "Download requires a CivitAI API key. "
+                                "Expand the 'API Key' section below, paste your key, "
+                                "and click Save Key before retrying."
+                            ), no_update, no_update
+                        return f"Download failed: {e}", no_update, no_update
+
+                def _browse_save_key(key):
+                    civitai_save_key(key)
+                    gr.Info("API key saved.")
+                    return gr.update()
+
+                # Wire search
+                _search_inputs = [browse_query, browse_type, browse_base_model, browse_content, browse_sort, browse_per_page]
+                _search_outputs = [
+                    browse_results_state, browse_results_display,
+                    browse_status, browse_cursor_state, browse_page_num_state,
+                    browse_page_label,
+                ]
+                browse_btn.click(
+                    fn=_browse_search_fresh,
+                    inputs=_search_inputs,
+                    outputs=_search_outputs,
+                )
+                browse_query.submit(
+                    fn=_browse_search_fresh,
+                    inputs=_search_inputs,
+                    outputs=_search_outputs,
+                )
+                browse_next_btn.click(
+                    fn=_browse_next,
+                    inputs=_search_inputs + [browse_cursor_state, browse_page_num_state],
+                    outputs=_search_outputs,
+                )
+                browse_prev_btn.click(
+                    fn=_browse_prev,
+                    inputs=_search_inputs + [browse_cursor_state, browse_page_num_state],
+                    outputs=_search_outputs,
+                )
+
+                # Wire tile selection → show file info
+                browse_selected_idx.change(
+                    fn=_browse_on_select,
+                    inputs=[browse_selected_idx, browse_results_state],
+                    outputs=[browse_model_info],
+                )
+
+                # Wire download (also refreshes model dropdowns on success)
+                browse_download_btn.click(
+                    fn=_browse_download_selected,
+                    inputs=[browse_results_state, browse_selected_idx, browse_api_key],
+                    outputs=[browse_download_status, model_dropdown, i2i_model_dropdown],
+                )
+
+                # Wire API key save
+                browse_save_key_btn.click(
+                    fn=_browse_save_key,
+                    inputs=[browse_api_key],
+                    outputs=[browse_api_key],
+                )
+
+                # Auto-load results when the page first opens
+                def _browse_initial_load():
+                    return _browse_search_fresh("", "All", "All", "Show All", "Most Downloaded", "20")
+
+                app.load(
+                    fn=_browse_initial_load,
+                    outputs=_search_outputs,
+                )
+
         # ── Profile panel wiring ──
         all_prompt_outputs = [
             positive_prompt, negative_prompt,
@@ -2070,9 +2383,7 @@ def build_ui():
 
 if __name__ == "__main__":
     print(f"Device: {config.DEVICE} | Dtype: {config.DTYPE}")
-    print("Loading model...")
-    generator.load_model(progress_callback=print)
-    print("Model loaded. Starting UI...")
+    print("Starting UI (model loads on first use)...")
     print("\n\033[1;36m-> http://127.0.0.1:7860\033[0m\n")
 
     app = build_ui()

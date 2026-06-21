@@ -69,13 +69,13 @@ class ImageGenerator:
         self._cached_embeds = None  # (pos_embeds, pos_pooled, neg_embeds, neg_pooled)
 
     def get_available_models(self):
-        """List models in models/ — both diffusers folders and single .safetensors files."""
+        """List models in models/ — both diffusers folders and single checkpoint files."""
         config.MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         models = []
         for item in config.MODEL_CACHE_DIR.iterdir():
             if item.is_dir() and (item / "model_index.json").exists():
                 models.append(item.name)
-            elif item.is_file() and item.suffix == ".safetensors":
+            elif item.is_file() and item.suffix in (".safetensors", ".ckpt"):
                 models.append(item.name)
         return sorted(models)
 
@@ -188,7 +188,7 @@ class ImageGenerator:
         )
 
     def _load_single_file(self, path):
-        """Load a single .safetensors checkpoint file."""
+        """Load a single .safetensors or .ckpt checkpoint file."""
         if self._model_type == "sdxl":
             self.pipe = StableDiffusionXLPipeline.from_single_file(
                 str(path),

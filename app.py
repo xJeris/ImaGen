@@ -12,17 +12,9 @@ import config
 from pipeline import ImageGenerator, SCHEDULER_NAMES
 from upscaler import Upscaler
 # LoRATrainer imported lazily on first use (saves ~1-2s startup from peft/torchvision/datasets)
+# VideoGenerator and AnimateDiffGenerator imported lazily on first use (saves ~10-20s startup
+# from diffusers sub-modules, numpy, bitsandbytes, etc.)
 from video_chunker import generate_video_chunked
-from video_pipeline import (
-    VideoGenerator, WAN_FPS, MIN_FPS, MAX_FPS, VIDEO_SCHEDULER_NAMES,
-    estimate_video_vram_gb, get_available_vram_gb, get_total_vram_gb,
-)
-from animatediff_pipeline import (
-    AnimateDiffGenerator, ANIMATEDIFF_SCHEDULER_NAMES,
-    ANIMATEDIFF_FPS, ANIMATEDIFF_MIN_FPS,
-    ANIMATEDIFF_MAX_CONTEXT,
-    estimate_animatediff_vram_gb,
-)
 from preview_files import list_output_files, get_file_info, delete_files
 from civitai_browser import (
     search_models as civitai_search,
@@ -34,10 +26,81 @@ from civitai_browser import (
     CONTENT_FILTERS,
 )
 
+# --- Constants inlined from video_pipeline / animatediff_pipeline (avoid heavy imports) ---
+WAN_FPS = 24
+MIN_FPS = 6
+MAX_FPS = 30
+VIDEO_SCHEDULER_NAMES = ["UniPC", "Euler", "DPM++ 2M"]
+ANIMATEDIFF_FPS = 12
+ANIMATEDIFF_MIN_FPS = 6
+ANIMATEDIFF_MAX_CONTEXT = 16
+ANIMATEDIFF_SCHEDULER_NAMES = ["Euler", "Euler Ancestral", "DPM++ 2M Karras", "DDIM", "UniPC"]
+
+
+def estimate_video_vram_gb(num_frames: int, width: int = 832, height: int = 480, is_lite: bool = True) -> float:
+    """Estimate peak VRAM usage in GB for a WAN video generation."""
+    if is_lite:
+        base_gb = 5.0
+        per_frame_gb = 0.025
+    else:
+        base_gb = 7.0
+        per_frame_gb = 0.02
+    diffusion_gb = base_gb + num_frames * per_frame_gb
+    vae_decode_gb = 2.0 + num_frames * 0.015
+    if is_lite:
+        peak_gb = max(diffusion_gb, base_gb + vae_decode_gb)
+    else:
+        peak_gb = max(diffusion_gb, vae_decode_gb + 1.0)
+    return round(peak_gb, 1)
+
+
+def get_available_vram_gb() -> float | None:
+    """Return free VRAM in GB, or None if no CUDA GPU."""
+    if not torch.cuda.is_available():
+        return None
+    free, _ = torch.cuda.mem_get_info()
+    return round(free / (1024 ** 3), 1)
+
+
+def get_total_vram_gb() -> float | None:
+    """Return total VRAM in GB, or None if no CUDA GPU."""
+    if not torch.cuda.is_available():
+        return None
+    _, total = torch.cuda.mem_get_info()
+    return round(total / (1024 ** 3), 1)
+
+
+def estimate_animatediff_vram_gb(num_frames: int, width: int = 512, height: int = 512) -> float:
+    """Estimate peak VRAM usage in GB for AnimateDiff generation."""
+    base_gb = 4.5
+    per_frame_gb = 0.12
+    peak_gb = base_gb + num_frames * per_frame_gb
+    return round(peak_gb, 1)
+
+
 generator = ImageGenerator()
-video_generator = VideoGenerator()
-animatediff_generator = AnimateDiffGenerator()
+video_generator = None  # lazy-loaded on first use
+animatediff_generator = None  # lazy-loaded on first use
 upscaler = Upscaler()
+
+
+def _get_video_generator():
+    """Lazy-load VideoGenerator on first use."""
+    global video_generator
+    if video_generator is None:
+        from video_pipeline import VideoGenerator
+        video_generator = VideoGenerator()
+    return video_generator
+
+
+def _get_animatediff_generator():
+    """Lazy-load AnimateDiffGenerator on first use."""
+    global animatediff_generator
+    if animatediff_generator is None:
+        from animatediff_pipeline import AnimateDiffGenerator
+        animatediff_generator = AnimateDiffGenerator()
+    return animatediff_generator
+
 trainer = None
 _last_image = None
 _last_video_path = None
@@ -67,8 +130,10 @@ def switch_model(model_name):
         return f"Already loaded: {model_name}", gr.update(), gr.update()
     try:
         # Unload other models first to free VRAM for image generation.
-        video_generator.unload_model()
-        animatediff_generator.unload_model()
+        if video_generator is not None:
+            video_generator.unload_model()
+        if animatediff_generator is not None:
+            animatediff_generator.unload_model()
         generator.load_model(model_name, progress_callback=print)
 
         new_loras = list_loras()
@@ -86,8 +151,10 @@ def switch_model(model_name):
 def shutdown_app():
     """Unload all models, free VRAM, and shut down the server."""
     generator.unload_model()
-    video_generator.unload_model()
-    animatediff_generator.unload_model()
+    if video_generator is not None:
+        video_generator.unload_model()
+    if animatediff_generator is not None:
+        animatediff_generator.unload_model()
     upscaler.unload()
     # Give Gradio a moment to send the response, then exit
     import threading
@@ -433,23 +500,25 @@ def start_training(image_dir, lora_name, steps, learning_rate, rank):
 # === Video functions ===
 
 def video_list_models():
-    return video_generator.get_available_video_models()
+    return _get_video_generator().get_available_video_models()
 
 
 def video_list_loras():
-    return ["None"] + video_generator.get_available_loras()
+    return ["None"] + _get_video_generator().get_available_loras()
 
 
 def video_switch_model(model_name):
     if not model_name:
         return "No video model selected."
-    if model_name == video_generator._model_name:
+    vg = _get_video_generator()
+    if model_name == vg._model_name:
         return f"Already loaded: {model_name}"
     try:
         # Unload other models first to free VRAM for video generation.
         generator.unload_model()
-        animatediff_generator.unload_model()
-        video_generator.load_model(model_name, progress_callback=print)
+        if animatediff_generator is not None:
+            animatediff_generator.unload_model()
+        vg.load_model(model_name, progress_callback=print)
         return f"Loaded: {model_name}"
     except Exception as e:
         return f"Failed to load {model_name}: {e}"
@@ -462,7 +531,8 @@ def video_estimate_vram(duration, fps):
     k = max(k, 1)
     num_frames = 4 * k + 1
 
-    is_lite = video_generator._model_name and "1.3B" in video_generator._model_name
+    vg_name = video_generator._model_name if video_generator is not None else None
+    is_lite = vg_name and "1.3B" in vg_name
     estimated = estimate_video_vram_gb(num_frames, is_lite=is_lite)
     # Flush allocator cache before checking free VRAM for accurate reading
     if torch.cuda.is_available():
@@ -487,11 +557,12 @@ def video_generate(
 ):
     global _last_video_path
 
-    if video_generator.pipe is None:
+    vg = _get_video_generator()
+    if vg.pipe is None:
         raise gr.Error("Please select and load a video model first.")
 
     full_prompt = _build_prompt(positive_prompt, description)
-    _apply_loras(video_generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
+    _apply_loras(vg, lora1_name, lora1_weight, lora2_name, lora2_weight)
 
     raw_frames = int(duration) * int(fps)
     # WAN requires (num_frames - 1) divisible by 4, i.e. num_frames = 4k + 1.
@@ -509,7 +580,7 @@ def video_generate(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    is_lite = video_generator._model_name and "1.3B" in video_generator._model_name
+    is_lite = vg._model_name and "1.3B" in vg._model_name
     estimated_vram = estimate_video_vram_gb(num_frames, is_lite=is_lite)
     available_vram = get_available_vram_gb()
     if available_vram is not None and estimated_vram > available_vram:
@@ -523,7 +594,7 @@ def video_generate(
     yield None, f"Generating {num_frames} frames (~{estimated_vram} GB VRAM)..."
 
     frames = generate_video_chunked(
-        video_generator=video_generator,
+        video_generator=vg,
         positive_prompt=full_prompt,
         negative_prompt=negative_prompt,
         num_frames_total=num_frames,
@@ -549,13 +620,13 @@ def video_generate(
     tmp.close()
 
     yield None, "Exporting video..."
-    video_generator.export_video(frames, tmp.name, fps=int(fps))
+    vg.export_video(frames, tmp.name, fps=int(fps))
     _last_video_path = tmp.name
     yield tmp.name, f"Seed: {actual_seed}"
 
 
 def video_stop():
-    video_generator.interrupt()
+    _get_video_generator().interrupt()
     return "Stopping..."
 
 
@@ -574,19 +645,19 @@ def video_save():
 # === AnimateDiff functions ===
 
 def anim_list_base_models():
-    return animatediff_generator.get_available_base_models()
+    return _get_animatediff_generator().get_available_base_models()
 
 
 def anim_list_motion_adapters():
-    return animatediff_generator.get_available_motion_adapters()
+    return _get_animatediff_generator().get_available_motion_adapters()
 
 
 def anim_list_sparsectrls():
-    return animatediff_generator.get_available_sparsectrls()
+    return _get_animatediff_generator().get_available_sparsectrls()
 
 
 def anim_list_loras():
-    return ["None"] + animatediff_generator.get_available_loras()
+    return ["None"] + _get_animatediff_generator().get_available_loras()
 
 
 def anim_load_models(base_model, motion_adapter, sparsectrl):
@@ -599,8 +670,9 @@ def anim_load_models(base_model, motion_adapter, sparsectrl):
     try:
         # Unload other models first to free VRAM.
         generator.unload_model()
-        video_generator.unload_model()
-        animatediff_generator.load_model(
+        if video_generator is not None:
+            video_generator.unload_model()
+        _get_animatediff_generator().load_model(
             base_model, motion_adapter, sparsectrl,
             progress_callback=print,
         )
@@ -639,14 +711,15 @@ def anim_generate(
 ):
     global _last_anim_path
 
-    if animatediff_generator.pipe is None:
+    ag = _get_animatediff_generator()
+    if ag.pipe is None:
         raise gr.Error("Please load AnimateDiff models first.")
 
     if source_image is None:
         raise gr.Error("Please upload a source image.")
 
     full_prompt = _build_prompt(positive_prompt, description)
-    _apply_loras(animatediff_generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
+    _apply_loras(ag, lora1_name, lora1_weight, lora2_name, lora2_weight)
 
     num_frames = int(num_frames)
     actual_seed = _resolve_seed(seed)
@@ -665,7 +738,7 @@ def anim_generate(
     yield None, f"Generating {num_frames} frames (~{estimated_vram} GB VRAM)..."
 
     frames = generate_video_chunked(
-        video_generator=animatediff_generator,
+        video_generator=ag,
         positive_prompt=full_prompt,
         negative_prompt=negative_prompt,
         num_frames_total=num_frames,
@@ -693,13 +766,13 @@ def anim_generate(
     tmp.close()
 
     yield None, "Exporting video..."
-    animatediff_generator.export_video(frames, tmp.name, fps=int(fps))
+    ag.export_video(frames, tmp.name, fps=int(fps))
     _last_anim_path = tmp.name
     yield tmp.name, f"Seed: {actual_seed}"
 
 
 def anim_stop():
-    animatediff_generator.interrupt()
+    _get_animatediff_generator().interrupt()
     return "Stopping..."
 
 
@@ -1434,7 +1507,7 @@ def build_ui():
             with gr.Tab("Text to Video"):
                 with gr.Row():
                     vid_model = gr.Dropdown(
-                        choices=video_list_models(),
+                        choices=[],
                         value=None,
                         label="Video Model",
                         scale=3,
@@ -1519,7 +1592,7 @@ def build_ui():
 
                         with gr.Accordion("LoRA", open=False):
                             vid_lora_1 = gr.Dropdown(
-                                choices=video_list_loras(),
+                                choices=["None"],
                                 value="None",
                                 label="LoRA 1",
                             )
@@ -1528,7 +1601,7 @@ def build_ui():
                                 step=0.05, label="LoRA 1 Weight",
                             )
                             vid_lora_2 = gr.Dropdown(
-                                choices=video_list_loras(),
+                                choices=["None"],
                                 value="None",
                                 label="LoRA 2",
                             )
@@ -1598,19 +1671,19 @@ def build_ui():
                 )
                 with gr.Row():
                     anim_base_model = gr.Dropdown(
-                        choices=anim_list_base_models(),
+                        choices=[],
                         value=None,
                         label="SD 1.5 Base Model",
                         scale=2,
                     )
                     anim_motion_adapter = gr.Dropdown(
-                        choices=anim_list_motion_adapters(),
+                        choices=[],
                         value=None,
                         label="Motion Adapter",
                         scale=2,
                     )
                     anim_sparsectrl = gr.Dropdown(
-                        choices=anim_list_sparsectrls(),
+                        choices=[],
                         value=None,
                         label="SparseControlNet",
                         scale=2,
@@ -1715,7 +1788,7 @@ def build_ui():
 
                         with gr.Accordion("LoRA", open=False):
                             anim_lora_1 = gr.Dropdown(
-                                choices=anim_list_loras(),
+                                choices=["None"],
                                 value="None",
                                 label="LoRA 1",
                             )
@@ -1724,7 +1797,7 @@ def build_ui():
                                 step=0.05, label="LoRA 1 Weight",
                             )
                             anim_lora_2 = gr.Dropdown(
-                                choices=anim_list_loras(),
+                                choices=["None"],
                                 value="None",
                                 label="LoRA 2",
                             )

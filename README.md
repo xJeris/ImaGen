@@ -2,7 +2,7 @@
 
 **Offline text-to-image, image-to-image & text-to-video generation.**
 
-A fully self-contained AI image and video generator that runs entirely on your local machine — no internet connection required after initial setup. Built with Stable Diffusion (SDXL / SD 1.5) for images and WAN 2.1 for video, wrapped in a clean Gradio web UI.
+A fully self-contained AI image and video generator that runs entirely on your local machine — no internet connection required after initial setup. Built with Stable Diffusion (SDXL / SD 1.5), Pony, Illustrious, and Flux for images, and WAN 2.1 for video, wrapped in a clean Gradio web UI.
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-CUDA-green)
@@ -12,7 +12,8 @@ A fully self-contained AI image and video generator that runs entirely on your l
 
 ## Features
 
-- **Text to Image** — Generate images from text prompts using Stable Diffusion XL or SD 1.5 models
+- **Multi-Architecture Support** — Switch between SDXL / SD 1.5, Pony, Illustrious, and Flux architectures from the UI with per-architecture defaults
+- **Text to Image** — Generate images from text prompts using any supported architecture
 - **Image to Image** — Upload an image and transform it with text-guided diffusion
 - **Inpainting** — Paint a mask over part of an image and regenerate just that area
 - **Text to Video** — Generate short video clips (1–5 seconds) using WAN 2.1 models
@@ -83,10 +84,13 @@ Once loaded, open **http://127.0.0.1:7860** in your browser.
 
 ### Text to Image
 
-1. Enter a **Positive Prompt** describing what you want
-2. Enter a **Negative Prompt** for things to avoid
-3. Click **Generate**
-4. Click **Save as PNG** to save to the `outputs/` folder
+1. Select an **Architecture** (SDXL / SD 1.5, Pony, Illustrious, or Flux)
+2. Enter a **Positive Prompt** describing what you want
+3. Enter a **Negative Prompt** for things to avoid
+4. Click **Generate**
+5. Click **Save as PNG** to save to the `outputs/` folder
+
+> **Note:** Flux does not support negative prompts or `[token:weight]` syntax. These fields are ignored when using Flux.
 
 #### Weighted Prompts
 
@@ -188,10 +192,15 @@ The trained LoRA is saved to `loras/` and immediately available in the LoRA drop
 ### Image Models
 
 1. Download a model in diffusers format (from HuggingFace, CivitAI, etc.) or as a single `.safetensors` checkpoint
-2. Place it in the `models/` folder
-3. Click the **Base Model** dropdown to refresh — the model appears automatically
+2. Place it in the appropriate folder based on architecture:
+   - **SDXL / SD 1.5** → `models/`
+   - **Pony** → `models/pony/`
+   - **Illustrious** → `models/illustrious/`
+   - **Flux** → `models/flux/`
+3. Select the matching architecture from the **Architecture** dropdown
+4. Click the **Base Model** dropdown to refresh — the model appears automatically
 
-The app auto-detects SDXL vs SD 1.5 and adjusts accordingly.
+LoRA files follow the same pattern (`loras/`, `loras/pony/`, `loras/illustrious/`, `loras/flux/`).
 
 ### Video Models
 
@@ -232,10 +241,16 @@ ImaGen/
 ├── default_positive.txt    # Default positive prompt
 ├── default_negative.txt    # Default negative prompt
 ├── profiles/               # Saved prompt profiles
-├── models/                 # Base models (image + video)
-│   └── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
+├── models/                 # Base models (SDXL / SD 1.5 + video)
+│   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
+│   ├── pony/               # Pony architecture models
+│   ├── illustrious/        # Illustrious architecture models
+│   └── flux/               # Flux architecture models
 ├── upscalers/              # Upscaler model files
-├── loras/                  # LoRA adapter files
+├── loras/                  # LoRA adapter files (SDXL / SD 1.5)
+│   ├── pony/               # Pony LoRAs
+│   ├── illustrious/        # Illustrious LoRAs
+│   └── flux/               # Flux LoRAs
 └── outputs/                # Saved images and videos
 ```
 

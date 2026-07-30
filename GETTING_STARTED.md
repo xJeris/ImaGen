@@ -34,17 +34,39 @@ Once loaded, the UI opens at **http://127.0.0.1:7860** in your browser.
 
 ## Switching Models
 
-The **Base Model** dropdown at the top of the page lists all image models in the `models/` folder. Selecting a different model hot-swaps it (unloads the old one, loads the new one) — no restart needed.
+### Architecture Selector
+
+The **Architecture** dropdown at the top of the page lets you switch between supported model families:
+
+| Architecture | Default Resolution | Default Steps | Default CFG |
+|-------------|-------------------|---------------|-------------|
+| SDXL / SD 1.5 | 1024×1024 | 30 | 7.5 |
+| Pony | 1024×1024 | 25 | 3.0 |
+| Illustrious | 1024×1024 | 28 | 5.0 |
+| Flux | 512×512 | 20 | 3.5 |
+
+Switching architecture unloads the current model and updates the model/LoRA dropdowns to show only models in that architecture's folder. Default generation parameters are updated automatically.
+
+> **Note:** Flux does not support negative prompts or `[token:weight]` weighted prompt syntax. These fields are ignored when using Flux.
+
+### Base Model Dropdown
+
+The **Base Model** dropdown lists all image models in the current architecture's folder. Selecting a different model hot-swaps it (unloads the old one, loads the new one) — no restart needed.
 
 > **Note:** Only one pipeline (image or video) is loaded at a time. Switching to a video model automatically unloads the image model to free VRAM, and vice versa.
 
 ### Adding New Models
 
 1. Download a diffusers-format model (from HuggingFace, CivitAI, etc.)
-2. Place the model folder in `models/` — it must contain a `model_index.json` file
-3. Click the dropdown to refresh — the model appears automatically
+2. Place the model folder in the appropriate directory:
+   - **SDXL / SD 1.5** → `models/`
+   - **Pony** → `models/pony/`
+   - **Illustrious** → `models/illustrious/`
+   - **Flux** → `models/flux/`
+3. Select the matching architecture from the **Architecture** dropdown
+4. Click the **Base Model** dropdown to refresh — the model appears automatically
 
-The app auto-detects whether a model is SDXL or SD 1.5 and adjusts its pipeline accordingly.
+LoRA files follow the same pattern (`loras/`, `loras/pony/`, `loras/illustrious/`, `loras/flux/`).
 
 > **Note:** SD 1.5 models generate at 512x512 natively. SDXL models generate at 1024x1024. Adjust the width/height sliders to match.
 
@@ -55,7 +77,7 @@ You can also search and download models directly from CivitAI using the **Model 
 1. Enter a search query or browse the default results
 2. Use the filters to narrow by model type (Checkpoint, LORA), base model (SDXL, SD 1.5, Pony, etc.), and content rating
 3. Click a tile to select it — the model name, type, and file size appear in the Selected box
-4. Click **Download** — the file is saved to `models/` (for checkpoints) or `loras/` (for LoRAs), and the model dropdowns refresh automatically
+4. Click **Download** — the file is saved to the appropriate folder for the selected architecture (e.g. `models/pony/` or `loras/flux/`), and the model dropdowns refresh automatically
 
 Some restricted models require a CivitAI API key. Expand the **API Key** section at the bottom of the browser tab to enter and save your key. The key is stored in `~/.imagen/civitai_key.txt` (outside the project folder).
 
@@ -63,28 +85,26 @@ Some restricted models require a CivitAI API key. Expand the **API Key** section
 
 ### Model Compatibility
 
-ImaGen supports **SD 1.5** and **SDXL** architectures for image generation, and **WAN** for video generation. Models based on other architectures (Flux, SD 3, DiT-based) are not currently supported.
+ImaGen supports **SD 1.5**, **SDXL**, **Pony**, **Illustrious**, and **Flux** architectures for image generation, and **WAN** for video generation.
 
 **Supported — Image Generation (Text to Image / Image to Image / Inpainting):**
 
 | Base Model | Architecture | Notes |
 |------------|-------------|-------|
-| SD 1.5 | SD 1.5 | Native 512x512 |
-| SD 1.5 LCM | SD 1.5 | Use low steps (4-8), guidance ~1.0 |
-| SD 1.5 Hyper | SD 1.5 | Use low steps (1-4) |
-| SD 2.0 | SD 1.5* | May work — same UNet shape |
-| SD 2.1 | SD 1.5* | May work — same UNet shape |
-| SDXL 1.0 | SDXL | Native 1024x1024 |
-| SDXL Lightning | SDXL | Use low steps (2-8), guidance ~1.0 |
-| SDXL Hyper | SDXL | Use low steps (1-4) |
-| Pony | SDXL | SDXL fine-tune |
-| Pony V7 | SDXL | SDXL fine-tune |
-| Illustrious | SDXL | SDXL fine-tune |
-| NoobAI | SDXL | SDXL fine-tune |
-| PixArt alpha | SDXL* | May need testing |
-| PixArt Sigma | SDXL* | May need testing |
-| Z Image Turbo | SDXL | Use low steps (1-4), guidance ~1.0 |
-| Z Image Base | SDXL | SDXL fine-tune |
+| SD 1.5 | SDXL / SD 1.5 | Native 512x512 |
+| SD 1.5 LCM | SDXL / SD 1.5 | Use low steps (4-8), guidance ~1.0 |
+| SD 1.5 Hyper | SDXL / SD 1.5 | Use low steps (1-4) |
+| SD 2.0 | SDXL / SD 1.5* | May work — same UNet shape |
+| SD 2.1 | SDXL / SD 1.5* | May work — same UNet shape |
+| SDXL 1.0 | SDXL / SD 1.5 | Native 1024x1024 |
+| SDXL Lightning | SDXL / SD 1.5 | Use low steps (2-8), guidance ~1.0 |
+| SDXL Hyper | SDXL / SD 1.5 | Use low steps (1-4) |
+| Z Image Turbo | SDXL / SD 1.5 | Use low steps (1-4), guidance ~1.0 |
+| Z Image Base | SDXL / SD 1.5 | SDXL fine-tune |
+| Pony / Pony V7 | Pony | Place in `models/pony/` |
+| Illustrious / NoobAI | Illustrious | Place in `models/illustrious/` |
+| Flux .1 D / .1 S / .1 Krea / .1 Kontext | Flux | Place in `models/flux/`. No negative prompts or weighted syntax. |
+| Flux .2 D / .2 Klein variants | Flux | Place in `models/flux/` |
 
 **Supported — Video Generation:**
 
@@ -104,8 +124,6 @@ ImaGen supports **SD 1.5** and **SDXL** architectures for image generation, and 
 
 | Base Model | Architecture | Reason |
 |------------|-------------|--------|
-| Flux .1 D / .1 S / .1 Krea / .1 Kontext | DiT (transformer) | Requires FluxPipeline |
-| Flux .2 D / .2 Klein variants | DiT (transformer) | Requires FluxPipeline |
 | SD 1.4 | SD 1.x | Older, untested |
 | Aura Flow | Flow-matching transformer | Different architecture |
 | Chroma | Unknown | Different architecture |
@@ -119,7 +137,7 @@ ImaGen supports **SD 1.5** and **SDXL** architectures for image generation, and 
 | CogVideoX | Transformer-based video | Different architecture |
 | Anima | Unknown | Different architecture |
 
-> **Tip:** If a model is an SDXL or SD 1.5 fine-tune (e.g. downloaded from CivitAI with those base types), it will work even if it's not listed above. The key is the underlying architecture, not the model name.
+> **Tip:** If a model is a fine-tune of a supported architecture (e.g. downloaded from CivitAI with those base types), it will work — just place it in the correct architecture folder. The key is the underlying architecture, not the model name.
 
 ## Upscalers
 
@@ -421,10 +439,16 @@ ImaGen/
 ├── default_positive.txt    # Default positive prompt
 ├── default_negative.txt    # Default negative prompt
 ├── profiles/               # Saved prompt profiles (auto-created)
-├── models/                 # Base models — image and video (auto-created)
-│   └── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
+├── models/                 # Base models — SDXL / SD 1.5 + video (auto-created)
+│   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
+│   ├── pony/               # Pony architecture models
+│   ├── illustrious/        # Illustrious architecture models
+│   └── flux/               # Flux architecture models
 ├── upscalers/              # Upscaler .pth files (auto-created)
-├── loras/                  # LoRA .safetensors files (auto-created)
+├── loras/                  # LoRA .safetensors files — SDXL / SD 1.5 (auto-created)
+│   ├── pony/               # Pony LoRAs
+│   ├── illustrious/        # Illustrious LoRAs
+│   └── flux/               # Flux LoRAs
 └── outputs/                # Saved images and videos (auto-created)
 ```
 

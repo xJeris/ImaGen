@@ -2,8 +2,12 @@ import os
 import signal
 import shutil
 import tempfile
+import warnings
 from datetime import datetime
 from pathlib import Path
+
+# Suppress Starlette deprecation warning from Gradio internals
+warnings.filterwarnings("ignore", message=".*HTTP_422_UNPROCESSABLE_ENTITY.*")
 
 import gradio as gr
 import torch
@@ -78,10 +82,29 @@ def estimate_animatediff_vram_gb(num_frames: int, width: int = 512, height: int 
     return round(peak_gb, 1)
 
 
-generator = ImageGenerator()
+generators = {"SDXL / SD 1.5": ImageGenerator()}
+_active_arch = "SDXL / SD 1.5"
 video_generator = None  # lazy-loaded on first use
 animatediff_generator = None  # lazy-loaded on first use
 upscaler = Upscaler()
+
+
+def get_generator():
+    """Return the generator for the currently active architecture."""
+    global _active_arch
+    gen = generators.get(_active_arch)
+    if gen is None:
+        if _active_arch == "Pony":
+            from pony_pipeline import PonyGenerator
+            gen = PonyGenerator()
+        elif _active_arch == "Illustrious":
+            from illustrious_pipeline import IllustriousGenerator
+            gen = IllustriousGenerator()
+        elif _active_arch == "Flux":
+            from flux_pipeline import FluxGenerator
+            gen = FluxGenerator()
+        generators[_active_arch] = gen
+    return gen
 
 
 def _get_video_generator():
@@ -109,12 +132,12 @@ _last_anim_path = None
 
 def list_models():
     """Get available model names for the dropdown."""
-    return generator.get_available_models()
+    return get_generator().get_available_models()
 
 
 def list_loras():
     """Get available LoRA names for the dropdown."""
-    return ["None"] + generator.get_available_loras()
+    return ["None"] + get_generator().get_available_loras()
 
 
 def list_upscalers():
@@ -124,9 +147,10 @@ def list_upscalers():
 
 def switch_model(model_name):
     """Hot-swap to a different base model."""
+    gen = get_generator()
     if not model_name:
         return "No model selected.", gr.update(), gr.update()
-    if model_name == generator._model_name:
+    if model_name == gen._model_name:
         return f"Already loaded: {model_name}", gr.update(), gr.update()
     try:
         # Unload other models first to free VRAM for image generation.
@@ -134,11 +158,11 @@ def switch_model(model_name):
             video_generator.unload_model()
         if animatediff_generator is not None:
             animatediff_generator.unload_model()
-        generator.load_model(model_name, progress_callback=print)
+        gen.load_model(model_name, progress_callback=print)
 
         new_loras = list_loras()
 
-        status = f"Loaded: {model_name} ({generator._model_type})"
+        status = f"Loaded: {model_name} ({gen._model_type})"
         return (
             status,
             gr.update(choices=new_loras, value="None"),
@@ -148,9 +172,74 @@ def switch_model(model_name):
         return f"Failed to load {model_name}: {e}", gr.update(), gr.update()
 
 
+def switch_architecture(arch_name):
+    """Switch to a different model architecture."""
+    global _active_arch
+
+    defaults = config.ARCH_DEFAULTS[arch_name]
+
+    if arch_name == _active_arch:
+        gen = get_generator()
+        models = list_models()
+        loras = list_loras()
+        status = (
+            f"Loaded: {gen._model_name} ({gen._model_type})"
+            if gen.pipe else f"Architecture: {arch_name} (no model loaded)"
+        )
+        return (
+            status, status,
+            gr.update(choices=models, value=gen._model_name),
+            gr.update(choices=models, value=gen._model_name),
+            gr.update(choices=loras, value="None"),
+            gr.update(choices=loras, value="None"),
+            gr.update(choices=loras, value="None"),
+            gr.update(choices=loras, value="None"),
+            gr.update(value=defaults["steps"]),
+            gr.update(value=defaults["guidance_scale"]),
+            gr.update(value=defaults["width"]),
+            gr.update(value=defaults["height"]),
+            gr.update(visible=(arch_name == "Flux")),
+            gr.update(visible=(arch_name == "Flux")),
+        )
+
+    # Unload current generator to free VRAM
+    old_gen = generators.get(_active_arch)
+    if old_gen is not None and old_gen.pipe is not None:
+        old_gen.unload_model()
+    # Also unload video/animatediff
+    if video_generator is not None:
+        video_generator.unload_model()
+    if animatediff_generator is not None:
+        animatediff_generator.unload_model()
+
+    _active_arch = arch_name
+    gen = get_generator()
+    models = gen.get_available_models()
+    loras = ["None"] + gen.get_available_loras()
+
+    status = f"Architecture: {arch_name} (no model loaded)"
+    return (
+        status, status,
+        gr.update(choices=models, value=None),
+        gr.update(choices=models, value=None),
+        gr.update(choices=loras, value="None"),
+        gr.update(choices=loras, value="None"),
+        gr.update(choices=loras, value="None"),
+        gr.update(choices=loras, value="None"),
+        gr.update(value=defaults["steps"]),
+        gr.update(value=defaults["guidance_scale"]),
+        gr.update(value=defaults["width"]),
+        gr.update(value=defaults["height"]),
+        gr.update(visible=(arch_name == "Flux")),
+        gr.update(visible=(arch_name == "Flux")),
+    )
+
+
 def shutdown_app():
     """Unload all models, free VRAM, and shut down the server."""
-    generator.unload_model()
+    for gen in generators.values():
+        if gen is not None:
+            gen.unload_model()
     if video_generator is not None:
         video_generator.unload_model()
     if animatediff_generator is not None:
@@ -251,13 +340,15 @@ def _build_prompt(positive_prompt, description):
     return full
 
 
-def _apply_loras(gen, lora1_name, lora1_weight, lora2_name, lora2_weight):
+def _apply_loras(gen, lora1_name, lora1_weight, lora2_name, lora2_weight, lora_dir=None):
     """Build LoRA list from two slots and apply to the given generator."""
+    if lora_dir is None:
+        lora_dir = config.ARCH_LORA_DIRS[_active_arch]
     lora_list = []
     if lora1_name and lora1_name != "None":
-        lora_list.append((str(config.LORA_DIR / lora1_name), lora1_weight))
+        lora_list.append((str(lora_dir / lora1_name), lora1_weight))
     if lora2_name and lora2_name != "None":
-        lora_list.append((str(config.LORA_DIR / lora2_name), lora2_weight))
+        lora_list.append((str(lora_dir / lora2_name), lora2_weight))
     if lora_list:
         gen.load_loras(lora_list)
     else:
@@ -287,16 +378,17 @@ def generate_image(
     hires_enable, hires_upscaler, hires_scale, hires_denoise, hires_steps,
 ):
     global _last_image
+    gen = get_generator()
 
     # Auto-load model on first generation if none loaded yet
-    if generator.pipe is None:
+    if gen.pipe is None:
         models = list_models()
         if not models:
-            raise gr.Error("No models found in models/ directory.")
-        generator.load_model(models[0], progress_callback=print)
+            raise gr.Error(f"No models found for {_active_arch}.")
+        gen.load_model(models[0], progress_callback=print)
 
     full_prompt = _build_prompt(positive_prompt, description)
-    _apply_loras(generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
+    _apply_loras(gen, lora1_name, lora1_weight, lora2_name, lora2_weight)
     actual_seed = _resolve_seed(seed)
 
     # Offload text encoders when VRAM pressure is high (LoRAs or hires fix)
@@ -304,7 +396,7 @@ def generate_image(
     hires_active = hires_enable and hires_scale > 1.0
     heavy = has_loras or hires_active
 
-    image = generator.generate(
+    image = gen.generate(
         positive_prompt=full_prompt,
         negative_prompt=negative_prompt,
         steps=int(steps),
@@ -317,7 +409,7 @@ def generate_image(
         keep_encoders_offloaded=hires_active,  # skip GPU restore if hires follows
     )
 
-    if generator.was_interrupted:
+    if gen.was_interrupted:
         return None, "Generation stopped."
 
     # Hires Fix: upscale then img2img second pass for real detail
@@ -327,7 +419,7 @@ def generate_image(
         target_h = int(int(height) * hires_scale)
 
         # Free VRAM after first pass before upscaling
-        generator.flush_vram()
+        gen.flush_vram()
 
         if hires_upscaler and hires_upscaler != "Lanczos":
             # Use AI upscaler model (runs on CPU if VRAM is full)
@@ -342,9 +434,9 @@ def generate_image(
             image = image.resize((target_w, target_h), Image.LANCZOS)
 
         # Free VRAM before the memory-intensive high-res diffusion pass
-        generator.flush_vram()
+        gen.flush_vram()
 
-        image = generator.img2img(
+        image = gen.img2img(
             source_image=image,
             positive_prompt=full_prompt,
             negative_prompt=negative_prompt,
@@ -357,7 +449,7 @@ def generate_image(
             use_cached_embeds=True,  # reuse embeddings from generate()
         )
 
-        if generator.was_interrupted:
+        if gen.was_interrupted:
             return None, "Generation stopped."
 
     # Post-process upscaler (simple enlarge, separate from hires fix)
@@ -368,7 +460,7 @@ def generate_image(
 
 def stop_generation():
     """Signal the pipeline to stop after the current step."""
-    generator.interrupt()
+    get_generator().interrupt()
     return "Stopping..."
 
 
@@ -391,16 +483,17 @@ def img2img_generate(
     lora1_name, lora1_weight, lora2_name, lora2_weight, upscaler_name,
 ):
     global _last_image
+    gen = get_generator()
 
     # Auto-load model on first generation if none loaded yet
-    if generator.pipe is None:
+    if gen.pipe is None:
         models = list_models()
         if not models:
-            raise gr.Error("No models found in models/ directory.")
-        generator.load_model(models[0], progress_callback=print)
+            raise gr.Error(f"No models found for {_active_arch}.")
+        gen.load_model(models[0], progress_callback=print)
 
     full_prompt = _build_prompt(positive_prompt, description)
-    _apply_loras(generator, lora1_name, lora1_weight, lora2_name, lora2_weight)
+    _apply_loras(gen, lora1_name, lora1_weight, lora2_name, lora2_weight)
     actual_seed = _resolve_seed(seed)
 
     if inpaint_enabled:
@@ -425,7 +518,7 @@ def img2img_generate(
                 else:
                     mask.paste(layer, (0, 0))
 
-        image = generator.inpaint(
+        image = gen.inpaint(
             source_image=bg,
             mask_image=mask,
             positive_prompt=full_prompt,
@@ -441,7 +534,7 @@ def img2img_generate(
         if source_image is None:
             raise gr.Error("Please upload a source image.")
 
-        image = generator.img2img(
+        image = gen.img2img(
             source_image=source_image,
             positive_prompt=full_prompt,
             negative_prompt=negative_prompt,
@@ -452,7 +545,7 @@ def img2img_generate(
             scheduler_name=sampler,
         )
 
-    if generator.was_interrupted:
+    if gen.was_interrupted:
         return None, "Generation stopped."
 
     image = _apply_upscaler(image, upscaler_name)
@@ -471,11 +564,12 @@ def start_training(image_dir, lora_name, steps, learning_rate, rank):
     if not Path(image_dir).is_dir():
         raise gr.Error(f"Directory not found: {image_dir}")
 
-    if generator._model_type != "sdxl":
-        raise gr.Error("LoRA training currently requires an SDXL model.")
+    gen = get_generator()
+    if gen._model_type not in ("sdxl", "pony", "illustrious"):
+        raise gr.Error("LoRA training currently requires an SDXL-based model.")
 
     from training import LoRATrainer
-    trainer = LoRATrainer(generator)
+    trainer = LoRATrainer(gen)
     log_output = []
 
     def on_progress(msg):
@@ -515,7 +609,7 @@ def video_switch_model(model_name):
         return f"Already loaded: {model_name}"
     try:
         # Unload other models first to free VRAM for video generation.
-        generator.unload_model()
+        get_generator().unload_model()
         if animatediff_generator is not None:
             animatediff_generator.unload_model()
         vg.load_model(model_name, progress_callback=print)
@@ -562,7 +656,7 @@ def video_generate(
         raise gr.Error("Please select and load a video model first.")
 
     full_prompt = _build_prompt(positive_prompt, description)
-    _apply_loras(vg, lora1_name, lora1_weight, lora2_name, lora2_weight)
+    _apply_loras(vg, lora1_name, lora1_weight, lora2_name, lora2_weight, lora_dir=config.LORA_DIR)
 
     raw_frames = int(duration) * int(fps)
     # WAN requires (num_frames - 1) divisible by 4, i.e. num_frames = 4k + 1.
@@ -669,7 +763,7 @@ def anim_load_models(base_model, motion_adapter, sparsectrl):
         return "No SparseControlNet selected."
     try:
         # Unload other models first to free VRAM.
-        generator.unload_model()
+        get_generator().unload_model()
         if video_generator is not None:
             video_generator.unload_model()
         _get_animatediff_generator().load_model(
@@ -719,7 +813,7 @@ def anim_generate(
         raise gr.Error("Please upload a source image.")
 
     full_prompt = _build_prompt(positive_prompt, description)
-    _apply_loras(ag, lora1_name, lora1_weight, lora2_name, lora2_weight)
+    _apply_loras(ag, lora1_name, lora1_weight, lora2_name, lora2_weight, lora_dir=config.LORA_DIR)
 
     num_frames = int(num_frames)
     actual_seed = _resolve_seed(seed)
@@ -1129,13 +1223,21 @@ def build_ui():
             profile_delete_action = gr.Button("Delete Profile", size="sm")
             profile_close_btn = gr.Button("Close", size="sm", variant="stop")
 
+        with gr.Row():
+            arch_dropdown = gr.Dropdown(
+                choices=config.ARCHITECTURES,
+                value="SDXL / SD 1.5",
+                label="Architecture",
+                scale=2,
+            )
+
         with gr.Tabs():
             # === Text to Image tab ===
             with gr.Tab("Text to Image"):
                 with gr.Row():
                     model_dropdown = gr.Dropdown(
                         choices=list_models(),
-                        value=generator._model_name,
+                        value=get_generator()._model_name,
                         label="Base Model",
                         scale=3,
                     )
@@ -1146,7 +1248,7 @@ def build_ui():
                         scale=2,
                     )
                     model_status = gr.Textbox(
-                        value=f"Loaded: {generator._model_name} ({generator._model_type})" if generator.pipe else "No model loaded — select one above or click Generate",
+                        value=f"Loaded: {get_generator()._model_name} ({get_generator()._model_type})" if get_generator().pipe else "No model loaded — select one above or click Generate",
                         label="Status",
                         interactive=False,
                         scale=2,
@@ -1179,6 +1281,10 @@ def build_ui():
                             placeholder="blurry, low quality, deformed, watermark...",
                             lines=2,
                             max_lines=2,
+                        )
+                        t2i_flux_info = gr.Markdown(
+                            "**Note:** Flux does not support negative prompts or `[token:weight]` syntax. These fields will be ignored.",
+                            visible=False,
                         )
                         description = gr.Textbox(
                             label="Description",
@@ -1322,7 +1428,7 @@ def build_ui():
                 with gr.Row():
                     i2i_model_dropdown = gr.Dropdown(
                         choices=list_models(),
-                        value=generator._model_name,
+                        value=get_generator()._model_name,
                         label="Base Model",
                         scale=3,
                     )
@@ -1333,7 +1439,7 @@ def build_ui():
                         scale=2,
                     )
                     i2i_model_status = gr.Textbox(
-                        value=f"Loaded: {generator._model_name} ({generator._model_type})",
+                        value=f"Loaded: {get_generator()._model_name} ({get_generator()._model_type})",
                         label="Status",
                         interactive=False,
                         scale=2,
@@ -1388,6 +1494,10 @@ def build_ui():
                             placeholder="blurry, low quality, deformed...",
                             lines=2,
                             max_lines=2,
+                        )
+                        i2i_flux_info = gr.Markdown(
+                            "**Note:** Flux does not support negative prompts or `[token:weight]` syntax. These fields will be ignored.",
+                            visible=False,
                         )
                         i2i_description = gr.Textbox(
                             label="Description",
@@ -2191,7 +2301,8 @@ def build_ui():
                         model_type_label = r.get("type", "")
                         size = r.get("file_size_str", "")
                         # Build info string for direct JS display
-                        info = f"{r['name']} ({r.get('type','')}) — {r.get('filename','')} — {r.get('file_size_str','')}"
+                        base = r.get("base_model", "")
+                        info = f"{r['name']} ({r.get('type','')}) — {base} — {r.get('filename','')} — {r.get('file_size_str','')}"
                         if not r.get("download_url"):
                             info += " | ⚠ May require API key"
                         info_escaped = info.replace("'", "\\'").replace('"', "&quot;")
@@ -2277,7 +2388,7 @@ def build_ui():
                     if not selected["download_url"]:
                         return "No download URL available for this model.", no_update, no_update
 
-                    dest_dir = civitai_dest_dir(selected["type"])
+                    dest_dir = civitai_dest_dir(selected["type"], selected.get("base_model", ""))
                     filename = selected["filename"]
                     if not filename:
                         filename = f"{selected['name']}.safetensors"
@@ -2443,6 +2554,20 @@ def build_ui():
         profile_close_btn.click(
             fn=lambda: gr.update(visible=False),
             outputs=[profile_panel],
+        )
+
+        # ── Architecture switching ──
+        arch_dropdown.change(
+            fn=switch_architecture,
+            inputs=[arch_dropdown],
+            outputs=[
+                model_status, i2i_model_status,
+                model_dropdown, i2i_model_dropdown,
+                lora_dropdown_1, lora_dropdown_2,
+                i2i_lora_1, i2i_lora_2,
+                steps, guidance, width, height,
+                t2i_flux_info, i2i_flux_info,
+            ],
         )
 
     return app

@@ -40,6 +40,8 @@ SUPPORTED_BASE_MODELS = [
     "SDXL 1.0",
     "SD 1.5",
     "Pony",
+    "Illustrious",
+    "Flux.1 D",
 ]
 
 # Content rating filter options
@@ -101,6 +103,7 @@ def search_models(query="", model_type="All", sort="Most Downloaded", limit=20,
             "id": item["id"],
             "name": item["name"],
             "type": item.get("type", "Unknown"),
+            "base_model": first_version.get("baseModel", ""),
             "preview_url": preview_url,
             "version_id": first_version.get("id"),
             "version_name": first_version.get("name", ""),
@@ -116,11 +119,28 @@ def search_models(query="", model_type="All", sort="Most Downloaded", limit=20,
     return results, next_cursor
 
 
-def get_download_dir(model_type):
-    """Return the correct destination directory for a model type."""
+def get_download_dir(model_type, base_model=""):
+    """Return the correct destination directory for a model type and base model.
+
+    Routes downloads to the appropriate architecture subdirectory based on the
+    CivitAI base model identifier (e.g. "Pony", "Illustrious", "Flux.1 D").
+    """
+    # Map CivitAI base model names to architecture directory keys
+    _BASE_MODEL_TO_ARCH = {
+        "Pony": "Pony",
+        "Illustrious": "Illustrious",
+        "Flux.1 D": "Flux",
+        "Flux.1 S": "Flux",
+    }
+    arch = _BASE_MODEL_TO_ARCH.get(base_model)
+
     if model_type == "LORA":
+        if arch:
+            return config.ARCH_LORA_DIRS[arch]
         return config.LORA_DIR
-    # Checkpoints and everything else go to models/
+    # Checkpoints and everything else
+    if arch:
+        return config.ARCH_MODEL_DIRS[arch]
     return config.MODEL_CACHE_DIR
 
 

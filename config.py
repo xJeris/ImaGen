@@ -52,3 +52,55 @@ LORA_RANK = 4
 TRAINING_STEPS = 500
 LEARNING_RATE = 1e-4
 TRAIN_BATCH_SIZE = 1
+
+# ── Multi-architecture support ──
+ARCHITECTURES = ["SDXL / SD 1.5", "Pony", "Illustrious", "Flux"]
+
+ARCH_MODEL_DIRS = {
+    "SDXL / SD 1.5": MODEL_CACHE_DIR,
+    "Pony": MODEL_CACHE_DIR / "pony",
+    "Illustrious": MODEL_CACHE_DIR / "illustrious",
+    "Flux": MODEL_CACHE_DIR / "flux",
+}
+
+ARCH_LORA_DIRS = {
+    "SDXL / SD 1.5": LORA_DIR,
+    "Pony": LORA_DIR / "pony",
+    "Illustrious": LORA_DIR / "illustrious",
+    "Flux": LORA_DIR / "flux",
+}
+
+ARCH_DEFAULTS = {
+    "SDXL / SD 1.5": {
+        "steps": 30,
+        "guidance_scale": 7.5,
+        "width": 1024,
+        "height": 1024,
+        "scheduler": "Euler",
+    },
+    "Pony": {
+        "steps": 25,
+        "guidance_scale": 3.0,
+        "width": 1024,
+        "height": 1024,
+        "scheduler": "Euler Ancestral",
+    },
+    "Illustrious": {
+        "steps": 28,
+        "guidance_scale": 5.0,
+        "width": 1024,
+        "height": 1024,
+        "scheduler": "Euler Ancestral",
+    },
+    "Flux": {
+        "steps": 20,
+        "guidance_scale": 3.5,
+        "width": 512,
+        "height": 512,
+        "scheduler": "Euler",
+    },
+}
+
+# Auto-create architecture subdirectories
+for _d in list(ARCH_MODEL_DIRS.values()) + list(ARCH_LORA_DIRS.values()):
+    _d.mkdir(parents=True, exist_ok=True)

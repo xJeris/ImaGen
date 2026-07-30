@@ -6,6 +6,7 @@ call venv\Scripts\activate
 python app.py
 set EC=%errorlevel%
 if %EC% equ 0 exit
+if %EC% equ 42 exit
 if %EC% equ 15 exit
 if %EC% equ -15 exit
 if %EC% equ 3221225725 exit

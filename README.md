@@ -2,7 +2,7 @@
 
 **Offline text-to-image, image-to-image & text-to-video generation.**
 
-A fully self-contained AI image and video generator that runs entirely on your local machine — no internet connection required after initial setup. Built with Stable Diffusion (SDXL / SD 1.5), Pony, Illustrious, and Flux for images, and WAN 2.1 for video, wrapped in a clean Gradio web UI.
+A fully self-contained AI image and video generator that runs entirely on your local machine — no internet connection required after initial setup. Built with Stable Diffusion (SDXL / SD 1.5), Pony, Illustrious, and Flux for images, and WAN 2.1 + CogVideoX for video, wrapped in a clean Gradio web UI.
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-CUDA-green)
@@ -16,7 +16,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 - **Text to Image** — Generate images from text prompts using any supported architecture
 - **Image to Image** — Upload an image and transform it with text-guided diffusion
 - **Inpainting** — Paint a mask over part of an image and regenerate just that area
-- **Text to Video** — Generate short video clips (1–5 seconds) using WAN 2.1 models
+- **Text to Video** — Generate short video clips (1–5 seconds) using WAN 2.1 or CogVideoX models
 - **Image Animation** — Animate a still image using AnimateDiff + SparseCtrl (SD 1.5)
 - **Weighted Prompts** — Fine-tune emphasis with `[green curtains:1.5]` syntax
 - **Dual LoRA Support** — Load up to two LoRA adapters simultaneously with independent weight controls
@@ -125,12 +125,12 @@ AnimateDiff generates at 512x512 (source images are automatically resized). The 
 
 ### Text to Video
 
-1. Select a WAN 2.1 video model from the dropdown
+1. Select a video model from the dropdown (WAN 2.1 or CogVideoX)
 2. Enter a prompt describing the scene
-3. Set duration (1–5 seconds) and FPS (6–30, default 24)
+3. Set duration (1–5 seconds) and FPS (6–30, default 24 for WAN, 8 for CogVideoX)
 4. Click **Generate**
 
-Videos are exported as MP4. Generation uses single-pass diffusion with chunked VAE decode to stay within VRAM limits. The 1.3B Lite model takes 1–2 minutes; the 14B Full model takes several minutes but produces higher quality.
+Videos are exported as MP4. WAN uses single-pass diffusion with chunked VAE decode. CogVideoX runs diffusion in fp16 with sequential CPU offload, then decodes the VAE in float32 with spatial tiling.
 
 ### Preview Files
 
@@ -204,14 +204,20 @@ LoRA files follow the same pattern (`loras/`, `loras/pony/`, `loras/illustrious/
 
 ### Video Models
 
-1. Download a WAN 2.1 model in diffusers format
-2. Place the model folder in `models/`
-3. Click the **Video Model** dropdown to refresh
+**WAN 2.1** — Download in diffusers format and place in `models/`.
 
 | Model | VRAM | Speed | Quality |
 |-------|------|-------|---------|
 | WAN 2.1 1.3B (Lite) | ~5GB | 1–2 minutes | Good for simple scenes |
 | WAN 2.1 14B (Full) | ~7GB (4-bit) | Slower | Higher quality, more detail |
+
+**CogVideoX** — Download in diffusers format and place in `models/cogvideox/`.
+
+| Model | VRAM | Speed | Resolution |
+|-------|------|-------|------------|
+| CogVideoX-2b | ~5GB | ~2.5s/step | 720x480 |
+
+Click the **Video Model** dropdown to refresh after adding models.
 
 ### Upscalers
 
@@ -228,6 +234,7 @@ ImaGen/
 ├── app.py                  # Gradio web UI
 ├── pipeline.py             # Image generation pipeline (txt2img, img2img, inpainting)
 ├── video_pipeline.py       # Video generation pipeline (WAN 2.1)
+├── cogvideox_pipeline.py    # CogVideoX video pipeline (2b/5b, fp16 diffusion + fp32 VAE decode)
 ├── video_chunker.py        # VRAM-safe video generation (single-pass diffusion + chunked VAE decode)
 ├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
 ├── civitai_browser.py      # CivitAI model search and download
@@ -242,6 +249,7 @@ ImaGen/
 ├── default_negative.txt    # Default negative prompt
 ├── profiles/               # Saved prompt profiles
 ├── models/                 # Base models (SDXL / SD 1.5 + video)
+│   ├── cogvideox/          # CogVideoX video models
 │   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
 │   ├── pony/               # Pony architecture models
 │   ├── illustrious/        # Illustrious architecture models
@@ -271,6 +279,7 @@ ImaGen/
 | CUDA not available / very slow | Reinstall PyTorch with CUDA: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124` |
 | Out of memory (images) | Reduce resolution (768x768 or 512x512), reduce steps, close other GPU apps |
 | Out of memory (video) | Use the 1.3B Lite model; 14B uses 4-bit quantization + chunked VAE decode automatically |
+| CogVideoX black/red frames | This is handled automatically — the pipeline decodes in float32 to avoid fp16 precision loss |
 | Model not in dropdown | Ensure it's in `models/` with a `model_index.json`; click dropdown to refresh |
 | Training fails | LoRA training requires an SDXL model — switch models before training |
 | First run download fails | Internet is needed only once; delete `models/` and retry if interrupted |

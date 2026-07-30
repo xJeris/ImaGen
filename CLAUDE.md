@@ -43,7 +43,8 @@ The application is ~5,000 lines of Python organized as follows:
 ### Generation Pipelines
 - **pipeline.py** — `ImageGenerator` class. Loads SDXL or SD 1.5 models via HuggingFace Diffusers. Handles txt2img, img2img, inpainting. Uses Compel for weighted prompt parsing. Supports hot-swap model loading with VRAM cleanup.
 - **video_pipeline.py** — `VideoGenerator` class for WAN 2.1 models (1.3B lite, 14B full with 4-bit quantization). Single-pass diffusion for temporal coherence.
-- **video_chunker.py** — Chunked VAE decoding for video frames to stay within VRAM limits.
+- **cogvideox_pipeline.py** — `CogVideoXGenerator` class for CogVideoX models (2b, 5b). Two-phase generation: diffusion in fp16 with sequential CPU offload, then manual VAE decode in float32 on GPU with spatial tiling. Works around cuDNN conv3d hangs on Windows.
+- **video_chunker.py** — Chunked VAE decoding for video frames to stay within VRAM limits. Routes CogVideoX through single-pass pipeline path.
 - **animatediff_pipeline.py** — AnimateDiff + SparseCtrl for SD 1.5 image animation (max 16 frames).
 
 ### Utilities
@@ -55,7 +56,7 @@ The application is ~5,000 lines of Python organized as follows:
 - **config.py** — Central settings: device detection, dtype, default parameters, directory paths.
 
 ### Key Directories
-- `models/` — Pre-loaded model checkpoints (SDXL, SD 1.5, WAN, AnimateDiff)
+- `models/` — Pre-loaded model checkpoints (SDXL, SD 1.5, WAN, CogVideoX, AnimateDiff)
 - `loras/` — LoRA adapter files (auto-created)
 - `upscalers/` — Upscaler model files (auto-created)
 - `outputs/` — Generated images and videos (auto-created)
@@ -63,7 +64,7 @@ The application is ~5,000 lines of Python organized as follows:
 
 ## Key Technical Details
 
-- **GPU Memory Management**: Models are offloaded/unloaded between pipelines. VAE tiling enabled for large images. 4-bit quantization (bitsandbytes) for 14B video model.
+- **GPU Memory Management**: Models are offloaded/unloaded between pipelines. VAE tiling enabled for large images. 4-bit quantization (bitsandbytes) for 14B video model. CogVideoX uses sequential CPU offload for diffusion and manual float32 VAE decode with tiling to avoid cuDNN conv3d hangs on Windows.
 - **Model Formats**: Supports both diffusers-format directories and single-file safetensors/ckpt checkpoints.
 - **Prompt Weighting**: Uses `[token:weight]` syntax parsed by `prompt_parser.py`, then processed by Compel for attention scaling.
 - **Hires Fix**: Two-pass generation — first at lower resolution, then img2img upscale pass at target resolution.

@@ -101,6 +101,44 @@ ARCH_DEFAULTS = {
     },
 }
 
+# ── Video multi-architecture support ──
+COGVIDEOX_DIR = MODEL_CACHE_DIR / "cogvideox"
+COGVIDEOX_LORA_DIR = LORA_DIR / "cogvideox"
+
+VIDEO_ARCHITECTURES = ["WAN", "CogVideoX"]
+
+VIDEO_ARCH_MODEL_DIRS = {
+    "WAN": MODEL_CACHE_DIR,
+    "CogVideoX": COGVIDEOX_DIR,
+}
+
+VIDEO_ARCH_LORA_DIRS = {
+    "WAN": LORA_DIR,
+    "CogVideoX": COGVIDEOX_LORA_DIR,
+}
+
+VIDEO_ARCH_DEFAULTS = {
+    "WAN": {
+        "steps": 25,
+        "guidance_scale": 9.0,
+        "fps": 24,
+        "width": 832,
+        "height": 480,
+        "scheduler": "UniPC",
+        "schedulers": ["UniPC", "Euler", "DPM++ 2M"],
+    },
+    "CogVideoX": {
+        "steps": 50,
+        "guidance_scale": 6.0,
+        "fps": 8,
+        "width": 720,
+        "height": 480,
+        "scheduler": "DDIM",
+        "schedulers": ["DDIM", "DPM++"],
+    },
+}
+
 # Auto-create architecture subdirectories
-for _d in list(ARCH_MODEL_DIRS.values()) + list(ARCH_LORA_DIRS.values()):
+for _d in (list(ARCH_MODEL_DIRS.values()) + list(ARCH_LORA_DIRS.values())
+           + list(VIDEO_ARCH_MODEL_DIRS.values()) + list(VIDEO_ARCH_LORA_DIRS.values())):
     _d.mkdir(parents=True, exist_ok=True)

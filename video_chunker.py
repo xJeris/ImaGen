@@ -42,10 +42,15 @@ def _decode_latents_chunked(video_generator, latents, vae_batch_frames=8,
     import numpy as np
 
     is_animatediff = _is_animatediff_generator(video_generator)
+    is_cogvideox = _is_cogvideox_generator(video_generator)
     vae = video_generator.pipe.vae
 
     if is_animatediff:
         return _decode_animatediff_chunked(
+            video_generator, latents, vae, vae_batch_frames, progress_callback
+        )
+    elif is_cogvideox:
+        return _decode_cogvideox_chunked(
             video_generator, latents, vae, vae_batch_frames, progress_callback
         )
     else:
@@ -179,6 +184,34 @@ def _is_animatediff_generator(video_generator):
     return "source_image" in sig.parameters
 
 
+def _is_cogvideox_generator(video_generator):
+    """Check if this is a CogVideoXGenerator."""
+    return type(video_generator).__name__ == "CogVideoXGenerator"
+
+
+def _decode_cogvideox_chunked(video_generator, latents, vae, vae_batch_frames,
+                               progress_callback):
+    """VAE decode for CogVideoX models.
+
+    CogVideoX uses a 3D causal VAE with temporal convolutions that maintain
+    a conv_cache across frames. Unlike WAN, the temporal dimension CANNOT be
+    sliced — the decoder must see all frames at once. Spatial tiling
+    (vae.enable_tiling()) handles VRAM for the spatial dimensions instead.
+
+    The latents are already permuted to [batch, channels, frames, H, W]
+    by CogVideoXGenerator.generate_latents().
+    """
+    if progress_callback:
+        progress_callback("Decoding VAE (CogVideoX — full temporal pass with spatial tiling)...")
+
+    # Use the pipeline's own decode_latents which handles scaling + decode correctly.
+    # The latents are already permuted to [B, C, T, H, W] by generate_latents,
+    # but decode_latents expects the raw [B, T, C, H, W] from the pipeline output.
+    # So we use the generator's decode_latents which expects the pre-permuted format.
+    frames = video_generator.decode_latents(latents)
+    return frames
+
+
 def generate_video_chunked(
     video_generator,
     positive_prompt,
@@ -211,6 +244,40 @@ def generate_video_chunked(
     """
 
     is_animatediff = _is_animatediff_generator(video_generator)
+    is_cogvideox = _is_cogvideox_generator(video_generator)
+
+    # ================================================================
+    # CogVideoX: single-pass pipeline (diffusion + VAE decode together)
+    # CogVideoX's 3D causal VAE cannot be temporally chunked.  The
+    # pipeline handles VAE decode internally.  The step callback in
+    # CogVideoXGenerator pre-emptively offloads the transformer before
+    # the pipeline's own VAE decode begins.
+    # ================================================================
+    if is_cogvideox:
+        if progress_callback:
+            progress_callback(f"Running CogVideoX generation ({num_frames_total} frames)...")
+
+        frames = video_generator.generate_latents(
+            positive_prompt=positive_prompt,
+            negative_prompt=negative_prompt,
+            num_frames=num_frames_total,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            seed=seed,
+            scheduler_name=scheduler_name,
+            progress_callback=progress_callback,
+        )
+
+        if video_generator.was_interrupted or frames is None:
+            if progress_callback:
+                progress_callback("Generation interrupted.")
+            _flush_vram()
+            return None
+
+        if progress_callback:
+            progress_callback(f"Done — {len(frames)} frames ready for export.")
+        _flush_vram()
+        return frames
 
     # ================================================================
     # Stage 1: Single-pass diffusion — full temporal coherence
@@ -255,6 +322,11 @@ def generate_video_chunked(
     if progress_callback:
         progress_callback("Freeing diffusion memory before VAE decode...")
 
+    # Force transformer and text encoder to CPU before VAE decode.
+    # For CogVideoX this is essential; for WAN it's a no-op safety net
+    # (CPU offload already handles it implicitly).
+    if hasattr(video_generator, '_offload_for_decode'):
+        video_generator._offload_for_decode()
     _flush_vram()
 
     # ================================================================

@@ -1,5 +1,4 @@
 import os
-import signal
 import shutil
 import tempfile
 import warnings
@@ -35,6 +34,8 @@ WAN_FPS = 24
 MIN_FPS = 6
 MAX_FPS = 30
 VIDEO_SCHEDULER_NAMES = ["UniPC", "Euler", "DPM++ 2M"]
+COGVIDEOX_FPS = 8
+COGVIDEOX_SCHEDULER_NAMES = ["DDIM", "DPM++"]
 ANIMATEDIFF_FPS = 12
 ANIMATEDIFF_MIN_FPS = 6
 ANIMATEDIFF_MAX_CONTEXT = 16
@@ -74,6 +75,26 @@ def get_total_vram_gb() -> float | None:
     return round(total / (1024 ** 3), 1)
 
 
+def estimate_cogvideox_vram_gb(num_frames: int, is_2b: bool = True) -> float:
+    """Estimate peak VRAM usage in GB for a CogVideoX video generation."""
+    if is_2b:
+        # 2b stays fully on GPU (~5 GB model).  Estimate the additional
+        # VRAM needed for diffusion activations and VAE decode intermediates.
+        base_gb = 5.0
+        per_frame_gb = 0.04
+        vae_overhead_gb = 2.0 + num_frames * 0.03
+        diffusion_gb = base_gb + num_frames * per_frame_gb
+        peak_gb = max(diffusion_gb, base_gb + vae_overhead_gb)
+    else:
+        # 5b with CPU offload — only one component on GPU at a time.
+        base_gb = 11.0
+        per_frame_gb = 0.03
+        diffusion_gb = base_gb + num_frames * per_frame_gb
+        vae_decode_gb = 3.0 + num_frames * 0.02
+        peak_gb = max(diffusion_gb, vae_decode_gb + 1.0)
+    return round(peak_gb, 1)
+
+
 def estimate_animatediff_vram_gb(num_frames: int, width: int = 512, height: int = 512) -> float:
     """Estimate peak VRAM usage in GB for AnimateDiff generation."""
     base_gb = 4.5
@@ -85,7 +106,9 @@ def estimate_animatediff_vram_gb(num_frames: int, width: int = 512, height: int 
 generators = {"SDXL / SD 1.5": ImageGenerator()}
 _active_arch = "SDXL / SD 1.5"
 video_generator = None  # lazy-loaded on first use
+cogvideox_generator = None  # lazy-loaded on first use
 animatediff_generator = None  # lazy-loaded on first use
+_active_video_arch = "WAN"  # tracks active video architecture
 upscaler = Upscaler()
 
 
@@ -124,6 +147,28 @@ def _get_animatediff_generator():
         animatediff_generator = AnimateDiffGenerator()
     return animatediff_generator
 
+
+def _get_cogvideox_generator():
+    """Lazy-load CogVideoXGenerator on first use."""
+    global cogvideox_generator
+    if cogvideox_generator is None:
+        from cogvideox_pipeline import CogVideoXGenerator
+        cogvideox_generator = CogVideoXGenerator()
+    return cogvideox_generator
+
+
+def _get_active_video_generator():
+    """Return the video generator for the currently active video architecture."""
+    if _active_video_arch == "CogVideoX":
+        return _get_cogvideox_generator()
+    return _get_video_generator()
+
+
+def _get_active_video_lora_dir():
+    """Return the LoRA directory for the active video architecture."""
+    return config.VIDEO_ARCH_LORA_DIRS[_active_video_arch]
+
+
 trainer = None
 _last_image = None
 _last_video_path = None
@@ -156,6 +201,8 @@ def switch_model(model_name):
         # Unload other models first to free VRAM for image generation.
         if video_generator is not None:
             video_generator.unload_model()
+        if cogvideox_generator is not None:
+            cogvideox_generator.unload_model()
         if animatediff_generator is not None:
             animatediff_generator.unload_model()
         gen.load_model(model_name, progress_callback=print)
@@ -206,9 +253,11 @@ def switch_architecture(arch_name):
     old_gen = generators.get(_active_arch)
     if old_gen is not None and old_gen.pipe is not None:
         old_gen.unload_model()
-    # Also unload video/animatediff
+    # Also unload video/animatediff/cogvideox
     if video_generator is not None:
         video_generator.unload_model()
+    if cogvideox_generator is not None:
+        cogvideox_generator.unload_model()
     if animatediff_generator is not None:
         animatediff_generator.unload_model()
 
@@ -235,19 +284,29 @@ def switch_architecture(arch_name):
     )
 
 
+_SHUTDOWN_EXIT_CODE = 42  # Must match start.bat allowlist
+
+
 def shutdown_app():
-    """Unload all models, free VRAM, and shut down the server."""
-    for gen in generators.values():
-        if gen is not None:
-            gen.unload_model()
-    if video_generator is not None:
-        video_generator.unload_model()
-    if animatediff_generator is not None:
-        animatediff_generator.unload_model()
-    upscaler.unload()
-    # Give Gradio a moment to send the response, then exit
+    """Shut down the server and terminate the process.
+
+    Skip model unloading — if a generation is running, unload calls would
+    block waiting for the GIL.  Process exit frees all GPU memory anyway.
+
+    Strategy: os._exit() on a daemon thread after a short delay.  PyTorch
+    CUDA operations release the GIL, so the daemon thread can fire even if
+    the main thread is mid-generation.  os._exit() bypasses Python cleanup
+    and terminates immediately.
+    """
     import threading
-    threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+
+    def _force_exit():
+        import time
+        time.sleep(0.5)
+        os._exit(_SHUTDOWN_EXIT_CODE)
+
+    t = threading.Thread(target=_force_exit, daemon=True)
+    t.start()
     return "Shutting down..."
 
 
@@ -594,22 +653,28 @@ def start_training(image_dir, lora_name, steps, learning_rate, rank):
 # === Video functions ===
 
 def video_list_models():
-    return _get_video_generator().get_available_video_models()
+    return _get_active_video_generator().get_available_video_models()
 
 
 def video_list_loras():
-    return ["None"] + _get_video_generator().get_available_loras()
+    return ["None"] + _get_active_video_generator().get_available_loras()
 
 
 def video_switch_model(model_name):
     if not model_name:
         return "No video model selected."
-    vg = _get_video_generator()
+    vg = _get_active_video_generator()
     if model_name == vg._model_name:
         return f"Already loaded: {model_name}"
     try:
         # Unload other models first to free VRAM for video generation.
         get_generator().unload_model()
+        if _active_video_arch == "CogVideoX":
+            if video_generator is not None:
+                video_generator.unload_model()
+        else:
+            if cogvideox_generator is not None:
+                cogvideox_generator.unload_model()
         if animatediff_generator is not None:
             animatediff_generator.unload_model()
         vg.load_model(model_name, progress_callback=print)
@@ -618,16 +683,32 @@ def video_switch_model(model_name):
         return f"Failed to load {model_name}: {e}"
 
 
+def _round_video_frames(raw_frames):
+    """Round raw frame count to a valid value for the active video architecture."""
+    if _active_video_arch == "CogVideoX":
+        # CogVideoX: num_frames must be divisible by vae_scale_factor_temporal (4).
+        # The pipeline adds 1 extra frame, so we need (num_frames) divisible by 4.
+        num_frames = max(round(raw_frames / 4) * 4, 4)
+        return num_frames
+    else:
+        # WAN: (num_frames - 1) must be divisible by 4, i.e. num_frames = 4k + 1
+        k = round((raw_frames - 1) / 4)
+        k = max(k, 1)
+        return 4 * k + 1
+
+
 def video_estimate_vram(duration, fps):
     """Calculate and return a VRAM estimate string for the video settings."""
     raw_frames = int(duration) * int(fps)
-    k = round((raw_frames - 1) / 4)
-    k = max(k, 1)
-    num_frames = 4 * k + 1
+    num_frames = _round_video_frames(raw_frames)
 
-    vg_name = video_generator._model_name if video_generator is not None else None
-    is_lite = vg_name and "1.3B" in vg_name
-    estimated = estimate_video_vram_gb(num_frames, is_lite=is_lite)
+    if _active_video_arch == "CogVideoX":
+        estimated = estimate_cogvideox_vram_gb(num_frames)
+    else:
+        vg_name = video_generator._model_name if video_generator is not None else None
+        is_lite = vg_name and "1.3B" in vg_name
+        estimated = estimate_video_vram_gb(num_frames, is_lite=is_lite)
+
     # Flush allocator cache before checking free VRAM for accurate reading
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -644,6 +725,35 @@ def video_estimate_vram(duration, fps):
     return text
 
 
+def switch_video_architecture(arch_name):
+    """Switch the active video architecture and update UI defaults."""
+    global _active_video_arch
+
+    defaults = config.VIDEO_ARCH_DEFAULTS[arch_name]
+
+    if arch_name != _active_video_arch:
+        # Unload current video model to free VRAM
+        if _active_video_arch == "WAN" and video_generator is not None:
+            video_generator.unload_model()
+        elif _active_video_arch == "CogVideoX" and cogvideox_generator is not None:
+            cogvideox_generator.unload_model()
+
+    _active_video_arch = arch_name
+
+    # Get models for the new architecture
+    models = video_list_models()
+
+    return (
+        f"Architecture: {arch_name} (no model loaded)",
+        gr.update(choices=models, value=None),
+        gr.update(value=defaults["steps"]),
+        gr.update(value=defaults["guidance_scale"]),
+        gr.update(value=defaults["fps"], minimum=MIN_FPS, maximum=MAX_FPS),
+        gr.update(choices=defaults["schedulers"], value=defaults["scheduler"]),
+        video_estimate_vram(3, defaults["fps"]),
+    )
+
+
 def video_generate(
     positive_prompt, negative_prompt, description,
     duration, fps, steps, guidance, seed, sampler,
@@ -651,31 +761,30 @@ def video_generate(
 ):
     global _last_video_path
 
-    vg = _get_video_generator()
+    vg = _get_active_video_generator()
     if vg.pipe is None:
         raise gr.Error("Please select and load a video model first.")
 
     full_prompt = _build_prompt(positive_prompt, description)
-    _apply_loras(vg, lora1_name, lora1_weight, lora2_name, lora2_weight, lora_dir=config.LORA_DIR)
+    _apply_loras(vg, lora1_name, lora1_weight, lora2_name, lora2_weight,
+                 lora_dir=_get_active_video_lora_dir())
 
     raw_frames = int(duration) * int(fps)
-    # WAN requires (num_frames - 1) divisible by 4, i.e. num_frames = 4k + 1.
-    # Round to the nearest valid value.
-    k = round((raw_frames - 1) / 4)
-    k = max(k, 1)  # at least 5 frames
-    num_frames = 4 * k + 1
+    num_frames = _round_video_frames(raw_frames)
     actual_seed = _resolve_seed(seed)
 
-    # VRAM safety check — compare against free VRAM (accounts for loaded
-    # LoRAs, other models, and any other GPU consumers).
-    # Flush before checking so we get accurate free count (not stale allocator caches).
+    # VRAM safety check
     import gc as _gc
     _gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    is_lite = vg._model_name and "1.3B" in vg._model_name
-    estimated_vram = estimate_video_vram_gb(num_frames, is_lite=is_lite)
+    if _active_video_arch == "CogVideoX":
+        estimated_vram = estimate_cogvideox_vram_gb(num_frames)
+    else:
+        is_lite = vg._model_name and "1.3B" in vg._model_name
+        estimated_vram = estimate_video_vram_gb(num_frames, is_lite=is_lite)
+
     available_vram = get_available_vram_gb()
     if available_vram is not None and estimated_vram > available_vram:
         total_vram = get_total_vram_gb() or available_vram
@@ -700,7 +809,7 @@ def video_generate(
         vae_batch_frames=8,
     )
 
-    if frames is None:
+    if frames is None or len(frames) == 0:
         yield None, "Generation stopped."
         return
 
@@ -720,7 +829,7 @@ def video_generate(
 
 
 def video_stop():
-    _get_video_generator().interrupt()
+    _get_active_video_generator().interrupt()
     return "Stopping..."
 
 
@@ -1616,6 +1725,12 @@ def build_ui():
             # === Text to Video tab ===
             with gr.Tab("Text to Video"):
                 with gr.Row():
+                    vid_arch = gr.Dropdown(
+                        choices=config.VIDEO_ARCHITECTURES,
+                        value="WAN",
+                        label="Video Architecture",
+                        scale=1,
+                    )
                     vid_model = gr.Dropdown(
                         choices=[],
                         value=None,
@@ -1771,6 +1886,16 @@ def build_ui():
                 )
                 vid_stop_btn.click(fn=video_stop, outputs=[vid_seed_display])
                 vid_save_btn.click(fn=video_save, outputs=[vid_save_status])
+
+                vid_arch.change(
+                    fn=switch_video_architecture,
+                    inputs=[vid_arch],
+                    outputs=[
+                        vid_status, vid_model,
+                        vid_steps, vid_guidance, vid_fps, vid_sampler,
+                        vid_vram_estimate,
+                    ],
+                )
 
             # === Animate Image tab ===
             with gr.Tab("Animate Image"):

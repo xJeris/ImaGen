@@ -220,10 +220,15 @@ def switch_model(model_name):
 
 
 def switch_architecture(arch_name):
-    """Switch to a different model architecture."""
+    """Switch to a different model architecture.
+
+    Returns 15 values: the last one is a gr.update to sync the other
+    Architecture dropdown to the same value.
+    """
     global _active_arch
 
     defaults = config.ARCH_DEFAULTS[arch_name]
+    sync_other = gr.update(value=arch_name)
 
     if arch_name == _active_arch:
         gen = get_generator()
@@ -247,6 +252,7 @@ def switch_architecture(arch_name):
             gr.update(value=defaults["height"]),
             gr.update(visible=(arch_name == "Flux")),
             gr.update(visible=(arch_name == "Flux")),
+            sync_other,
         )
 
     # Unload current generator to free VRAM
@@ -281,6 +287,7 @@ def switch_architecture(arch_name):
         gr.update(value=defaults["height"]),
         gr.update(visible=(arch_name == "Flux")),
         gr.update(visible=(arch_name == "Flux")),
+        sync_other,
     )
 
 
@@ -1332,18 +1339,16 @@ def build_ui():
             profile_delete_action = gr.Button("Delete Profile", size="sm")
             profile_close_btn = gr.Button("Close", size="sm", variant="stop")
 
-        with gr.Row():
-            arch_dropdown = gr.Dropdown(
-                choices=config.ARCHITECTURES,
-                value="SDXL / SD 1.5",
-                label="Architecture",
-                scale=2,
-            )
-
         with gr.Tabs():
             # === Text to Image tab ===
             with gr.Tab("Text to Image"):
                 with gr.Row():
+                    arch_dropdown = gr.Dropdown(
+                        choices=config.ARCHITECTURES,
+                        value="SDXL / SD 1.5",
+                        label="Architecture",
+                        scale=2,
+                    )
                     model_dropdown = gr.Dropdown(
                         choices=list_models(),
                         value=get_generator()._model_name,
@@ -1535,6 +1540,12 @@ def build_ui():
             # === Img2Img tab ===
             with gr.Tab("Image to Image"):
                 with gr.Row():
+                    i2i_arch_dropdown = gr.Dropdown(
+                        choices=config.ARCHITECTURES,
+                        value="SDXL / SD 1.5",
+                        label="Architecture",
+                        scale=2,
+                    )
                     i2i_model_dropdown = gr.Dropdown(
                         choices=list_models(),
                         value=get_generator()._model_name,
@@ -2681,18 +2692,24 @@ def build_ui():
             outputs=[profile_panel],
         )
 
-        # ── Architecture switching ──
+        # ── Architecture switching (both dropdowns stay in sync) ──
+        _arch_outputs = [
+            model_status, i2i_model_status,
+            model_dropdown, i2i_model_dropdown,
+            lora_dropdown_1, lora_dropdown_2,
+            i2i_lora_1, i2i_lora_2,
+            steps, guidance, width, height,
+            t2i_flux_info, i2i_flux_info,
+        ]
         arch_dropdown.change(
             fn=switch_architecture,
             inputs=[arch_dropdown],
-            outputs=[
-                model_status, i2i_model_status,
-                model_dropdown, i2i_model_dropdown,
-                lora_dropdown_1, lora_dropdown_2,
-                i2i_lora_1, i2i_lora_2,
-                steps, guidance, width, height,
-                t2i_flux_info, i2i_flux_info,
-            ],
+            outputs=_arch_outputs + [i2i_arch_dropdown],
+        )
+        i2i_arch_dropdown.change(
+            fn=switch_architecture,
+            inputs=[i2i_arch_dropdown],
+            outputs=_arch_outputs + [arch_dropdown],
         )
 
     return app

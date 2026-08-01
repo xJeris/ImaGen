@@ -53,7 +53,7 @@ The application is ~5,000 lines of Python organized as follows:
 ### Utilities
 - **upscaler.py** — AI upscaling via Spandrel (Real-ESRGAN, SwinIR, ESRGAN model formats).
 - **training.py** — LoRA fine-tuning for SDXL using PEFT library.
-- **civitai_browser.py** — CivitAI model search and download integration.
+- **civitai_browser.py** — CivitAI model search and download integration. Extracts trigger words and recommended settings from API responses. Saves LoRA metadata sidecars on download.
 - **preview_files.py** — Output gallery and file management.
 - **prompt_parser.py** — Weighted prompt token parsing.
 - **config.py** — Central settings: device detection, dtype, default parameters, directory paths.
@@ -75,6 +75,9 @@ The application is ~5,000 lines of Python organized as follows:
 - **VAE Selection**: Custom VAEs can be placed in `models/vaes/`. The VAE dropdown appears in both T2I and I2I tabs (cross-tab synced). When a model is loaded, any previously selected custom VAE is re-applied automatically. VAE selection is disabled for Flux (different VAE architecture).
 - **Batch Generation**: T2I supports batch sizes 1–8 via `num_images_per_prompt`. Batch results display in the output gallery as a grid. Click an image to select it for "Save as PNG"; "Save All" button appears for batch runs. Hires fix and upscaler are applied to each image in the batch.
 - **Generation History**: Opt-in via "Save with history" checkbox next to Save button. When enabled, `_save_image_impl()` writes a JSON sidecar (`img_*.json`) and embeds params in PNG `tEXt` chunks under the `ImaGen:params` key.
+- **Model Browser Details**: When a tile is selected, the info panel shows trigger words, recommended settings (CFG, steps, sampler, clip skip), and links to both CivitAI and HuggingFace search. When a LoRA is downloaded, a JSON metadata sidecar is saved alongside it containing trigger words and settings.
+- **LoRA Trigger Words**: When a LoRA with a metadata sidecar (`.json` next to the `.safetensors`) is selected in the T2I tab, trigger words display below the dropdown. Sidecars are auto-created on download from the Model Browser.
+- **Prompting Guide**: A dynamic `prompt_guide` Markdown component below the Generate button shows architecture-specific prompting tips (tags vs natural language, score tags for Pony, etc.). Updates via a second `.change` handler on `arch_dropdown`. Content is in the `_PROMPTING_GUIDES` dict.
 - **Config Defaults** (in `config.py`): 30 steps, 7.5 CFG, 1024×1024, float16 on CUDA, float32 on CPU.
 
 ## Constraints
@@ -90,7 +93,7 @@ The application is ~5,000 lines of Python organized as follows:
 The Text-to-Image and Image-to-Image tabs share state (same model, same LoRAs, same architecture). Any `.change()` handler that references components from *both* tabs must be wired **after** all tabs are built (in the post-tabs section at the bottom of `build_ui()`), not inline within a tab. Inline wiring will fail because the other tab's components don't exist yet. See the `model_dropdown.change` and `i2i_model_dropdown.change` calls near the architecture switching block for the correct pattern.
 
 ### Multi-tab sync requirements
-When a function updates shared state (model loading, architecture switching, VAE switching), it must return updates for **both** tabs' UI components. `switch_model` returns 7 values (3 for the calling tab + 4 to sync the other tab's status, model dropdown, and LoRA dropdowns). `switch_architecture` returns 15 values covering both tabs. `switch_vae` returns 3 values (status for calling tab, status for other tab, other tab's VAE dropdown). Keep this in sync if adding new shared UI elements.
+When a function updates shared state (model loading, architecture switching, VAE switching), it must return updates for **both** tabs' UI components. `switch_model` returns 7 values (3 for the calling tab + 4 to sync the other tab's status, model dropdown, and LoRA dropdowns). `switch_architecture` returns 13 values covering both tabs (statuses, model dropdowns, LoRA dropdowns, default settings, and the other tab's arch dropdown sync). `switch_vae` returns 3 values (status for calling tab, status for other tab, other tab's VAE dropdown). Keep this in sync if adding new shared UI elements.
 
 ### CivitAI browser pagination
 CivitAI uses cursor-based (forward-only) pagination. A `browse_cursor_history` state (list of cursors, one per page) enables backward navigation by re-fetching with a previous cursor. `history[0]` is always `None` (page 1). The Next handler appends; the Previous handler pops.

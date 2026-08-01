@@ -19,12 +19,12 @@ A fully self-contained AI image and video generator that runs entirely on your l
 - **Text to Video** — Generate short video clips (1–5 seconds) using WAN 2.1 or CogVideoX models
 - **Image Animation** — Animate a still image using AnimateDiff + SparseCtrl (SD 1.5)
 - **Weighted Prompts** — Fine-tune emphasis with `[green curtains:1.5]` syntax
-- **Dual LoRA Support** — Load up to two LoRA adapters simultaneously with independent weight controls
+- **Dual LoRA Support** — Load up to two LoRA adapters simultaneously with independent weight controls; trigger words display automatically when available
 - **LoRA Training** — Train your own LoRA on custom images directly from the UI
 - **Hires Fix** — Two-pass generation: base render → AI upscale → img2img refinement for sharper detail
 - **AI Upscalers** — Post-process upscaling with Real-ESRGAN, SwinIR, ESRGAN, and other models via [Spandrel](https://github.com/chaiNNer-org/spandrel)
 - **Preview Files** — Browse, preview, and bulk delete generated images and videos from the outputs folder
-- **Model Browser** — Search and download models and LoRAs from CivitAI directly within the UI
+- **Model Browser** — Search and download models and LoRAs from CivitAI directly within the UI, with trigger words, recommended settings, and HuggingFace search links
 - **Prompt Profiles** — Save and load prompt presets (positive + negative) across all tabs
 - **Multiple Samplers** — Euler, Euler Ancestral, DPM++ 2M Karras, DPM++ SDE Karras, DDIM, UniPC
 - **Batch Generation** — Generate 1–8 variations at once from the same prompt, review in the output gallery grid, save selected or all
@@ -93,7 +93,7 @@ Once loaded, open **http://127.0.0.1:7860** in your browser.
 4. Click **Generate**
 5. Click **Save as PNG** to save to the `outputs/` folder
 
-> **Note:** Flux does not support negative prompts or `[token:weight]` syntax. These fields are ignored when using Flux.
+A **Prompting Guide** below the Generate button shows architecture-specific tips (tag-based vs natural language, recommended settings, etc.) and updates automatically when you switch architectures.
 
 #### Weighted Prompts
 
@@ -151,8 +151,10 @@ The **Model Browser** tab lets you search and download models directly from Civi
 
 1. Enter a search query or browse the default results
 2. Filter by model type (Checkpoint, LORA), base model (SDXL, SD 1.5, etc.), and content rating
-3. Click a tile to select it — file details appear in the Selected box
+3. Click a tile to select it — the info panel shows file details, trigger words, recommended settings (CFG, steps, sampler), and links to CivitAI and HuggingFace
 4. Click **Download** to save the model to the appropriate folder (`models/` or `loras/`)
+
+When a LoRA is downloaded, a metadata sidecar (`.json`) is saved alongside it. This enables automatic trigger word display when the LoRA is selected in the Text to Image tab.
 
 Some models require a CivitAI API key — expand the **API Key** section to enter and save your key.
 

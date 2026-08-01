@@ -387,8 +387,11 @@ class FluxGenerator:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def _decode_latents(self, latents):
-        """Decode latents to a PIL image using the VAE (outside autocast)."""
+    def _decode_latents(self, latents, batch_size=1):
+        """Decode latents to PIL image(s) using the VAE (outside autocast).
+
+        Returns a list of PIL Images.
+        """
         from diffusers.image_processor import VaeImageProcessor
         latents = self.pipe._unpack_latents(
             latents, self._last_height, self._last_width, self.pipe.vae_scale_factor
@@ -400,9 +403,9 @@ class FluxGenerator:
             decoded = self.pipe.vae.decode(latents, return_dict=False)[0]
         del latents
         image_processor = VaeImageProcessor(vae_scale_factor=self.pipe.vae_scale_factor)
-        image = image_processor.postprocess(decoded, output_type="pil")[0]
+        images = image_processor.postprocess(decoded, output_type="pil")
         del decoded
-        return image
+        return images
 
     def interrupt(self):
         self._interrupt = True
@@ -458,6 +461,7 @@ class FluxGenerator:
         scheduler_name: str = "Euler",
         offload_encoders: bool = False,
         keep_encoders_offloaded: bool = False,
+        batch_size: int = 1,
     ):
         """Generate an image from a text prompt.
 
@@ -522,6 +526,9 @@ class FluxGenerator:
             callback_on_step_end=self._step_callback,
         )
 
+        if batch_size > 1:
+            kwargs["num_images_per_prompt"] = batch_size
+
         # Run diffusion steps under autocast (NF4 transformer needs bf16),
         # but get raw latents so VAE decodes outside autocast.
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -535,13 +542,13 @@ class FluxGenerator:
 
         # Decode latents with VAE outside autocast (VAE uses force_upcast
         # to float32 internally, which conflicts with bf16 autocast)
-        image = self._decode_latents(latents)
+        images = self._decode_latents(latents, batch_size)
 
         # Free leftover VRAM from this generation so the next one starts clean
         del latents, prompt_embeds, pooled_prompt_embeds
         self.flush_vram()
 
-        return image
+        return images if batch_size > 1 else images[0]
 
     def img2img(
         self,
@@ -625,7 +632,7 @@ class FluxGenerator:
         if config.DEVICE == "cuda" and _orig_exec is not None:
             type(self.img2img_pipe)._execution_device = property(_orig_exec)
 
-        image = self._decode_latents(latents)
+        image = self._decode_latents(latents)[0]
 
         del latents, prompt_embeds, pooled_prompt_embeds
         self._cached_embeds = None

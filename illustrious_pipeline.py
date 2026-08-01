@@ -277,6 +277,7 @@ class IllustriousGenerator:
         scheduler_name: str = "Euler Ancestral",
         offload_encoders: bool = False,
         keep_encoders_offloaded: bool = False,
+        batch_size: int = 1,
     ):
         self._interrupt = False
         self.set_scheduler(scheduler_name)
@@ -316,7 +317,10 @@ class IllustriousGenerator:
             callback_on_step_end=self._step_callback,
         )
 
-        image = self.pipe(**kwargs).images[0]
+        if batch_size > 1:
+            kwargs["num_images_per_prompt"] = batch_size
+
+        images = self.pipe(**kwargs).images
 
         if offload_encoders and config.DEVICE == "cuda":
             type(self.pipe)._execution_device = property(_orig_exec)
@@ -325,7 +329,7 @@ class IllustriousGenerator:
                 if self.pipe.text_encoder_2 is not None:
                     self.pipe.text_encoder_2.to(config.DEVICE)
 
-        return image
+        return images if batch_size > 1 else images[0]
 
     def img2img(
         self,

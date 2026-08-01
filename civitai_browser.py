@@ -99,6 +99,28 @@ def search_models(query="", model_type="All", sort="Most Downloaded", limit=20,
         else:
             size_str = f"{size_kb:.0f} KB"
 
+        # Extract trigger words and recommended settings from version metadata
+        trained_words = first_version.get("trainedWords", [])
+        # CivitAI stores recommended settings at version level
+        rec_settings = {}
+        if first_version.get("steps"):
+            rec_settings["steps"] = first_version["steps"]
+        if first_version.get("cfgScale"):
+            rec_settings["cfg"] = first_version["cfgScale"]
+        if first_version.get("clipSkip"):
+            rec_settings["clip_skip"] = first_version["clipSkip"]
+        # Sampler can be in the version images' meta or at version level
+        if images and images[0].get("meta"):
+            meta = images[0]["meta"]
+            if meta.get("sampler") and "sampler" not in rec_settings:
+                rec_settings["sampler"] = meta["sampler"]
+            if meta.get("cfgScale") and "cfg" not in rec_settings:
+                rec_settings["cfg"] = meta["cfgScale"]
+            if meta.get("steps") and "steps" not in rec_settings:
+                rec_settings["steps"] = meta["steps"]
+            if meta.get("clipSkip") and "clip_skip" not in rec_settings:
+                rec_settings["clip_skip"] = meta["clipSkip"]
+
         results.append({
             "id": item["id"],
             "name": item["name"],
@@ -112,11 +134,28 @@ def search_models(query="", model_type="All", sort="Most Downloaded", limit=20,
             "filename": primary_file.get("name", ""),
             "download_url": primary_file.get("downloadUrl", ""),
             "description": item.get("description", ""),
+            "trained_words": trained_words,
+            "recommended_settings": rec_settings,
+            "civitai_url": f"https://civitai.com/models/{item['id']}",
         })
 
     metadata = data.get("metadata", {})
     next_cursor = metadata.get("nextCursor")
     return results, next_cursor
+
+
+def save_lora_metadata(dest_dir, filename, metadata):
+    """Save a JSON sidecar alongside a downloaded LoRA file.
+
+    Args:
+        dest_dir: Directory where the LoRA was saved
+        filename: The LoRA filename (e.g. "my_lora.safetensors")
+        metadata: Dict with keys like trained_words, recommended_settings, civitai_url
+    """
+    import json
+    sidecar_name = Path(filename).stem + ".json"
+    sidecar_path = Path(dest_dir) / sidecar_name
+    sidecar_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
 
 def get_download_dir(model_type, base_model=""):

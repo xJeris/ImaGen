@@ -25,6 +25,7 @@ from civitai_browser import (
     get_download_dir as civitai_dest_dir,
     get_api_key as civitai_get_key,
     save_api_key as civitai_save_key,
+    save_lora_metadata as civitai_save_lora_meta,
     SUPPORTED_BASE_MODELS,
     CONTENT_FILTERS,
 )
@@ -111,6 +112,42 @@ animatediff_generator = None  # lazy-loaded on first use
 _active_video_arch = "WAN"  # tracks active video architecture
 upscaler = Upscaler()
 
+# Architecture-specific prompting guides shown below Generate button
+_PROMPTING_GUIDES = {
+    "SDXL / SD 1.5": (
+        "**SDXL / SD 1.5** — Natural language or comma-separated tags. "
+        "Use `[word:1.5]` for emphasis.\n\n"
+        "**Positive:** descriptive scene, lighting, style, "
+        "`masterpiece, best quality, detailed`\n\n"
+        "**Negative:** `worst quality, low quality, blurry, deformed, watermark, text`\n\n"
+        "**Settings:** CFG 5–9 · 20–40 steps"
+    ),
+    "Pony": (
+        "**Pony V6** — Tag-based prompts (Danbooru-style), NOT natural language sentences.\n\n"
+        "**Positive:** `score_9, score_8_up, score_7_up, source_anime, "
+        "[subject tags], [scene tags]`\n\n"
+        "Source options: `source_anime`, `source_pony`, `source_furry`, "
+        "`source_cartoon`, `source_filmmaker`\n\n"
+        "**Negative:** `score_4, score_3, score_2, score_1, "
+        "worst quality, low quality, blurry`\n\n"
+        "**Settings:** CFG 2–4 · 20–30 steps · Euler Ancestral"
+    ),
+    "Illustrious": (
+        "**Illustrious** — Tag-based prompts (Danbooru tags), similar to Pony "
+        "but without score tags.\n\n"
+        "**Positive:** `masterpiece, best quality, [subject tags], [scene tags]`\n\n"
+        "**Negative:** `worst quality, low quality, blurry, bad anatomy`\n\n"
+        "**Settings:** CFG 4–7 · 25–35 steps · Euler Ancestral"
+    ),
+    "Flux": (
+        "**Flux** — Natural language descriptions (full sentences work best).\n\n"
+        "**Positive:** Describe the scene naturally with specific details.\n\n"
+        "**Negative:** Not supported — Flux ignores negative prompts entirely.\n\n"
+        "**Note:** Prompt weighting `[word:1.5]` is also not supported.\n\n"
+        "**Settings:** CFG 3–4 · 20–30 steps"
+    ),
+}
+
 
 def get_generator():
     """Return the generator for the currently active architecture."""
@@ -187,6 +224,30 @@ def list_models():
 def list_loras():
     """Get available LoRA names for the dropdown."""
     return ["None"] + get_generator().get_available_loras()
+
+
+def _get_lora_trigger_words(lora_name):
+    """Return HTML with trigger words for a LoRA, or empty string if none."""
+    if not lora_name or lora_name == "None":
+        return ""
+    import json
+    lora_dir = config.ARCH_LORA_DIRS.get(_active_arch, config.LORA_DIR)
+    sidecar = lora_dir / (Path(lora_name).stem + ".json")
+    if not sidecar.exists():
+        return ""
+    try:
+        meta = json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    words = meta.get("trained_words", [])
+    if not words:
+        return ""
+    words_html = ", ".join(f"<code>{w}</code>" for w in words)
+    return (
+        f'<div style="padding:4px 8px; margin-top:2px; font-size:12px; '
+        f'color:#ccc; background:#1a1a1a; border:1px solid #333; border-radius:4px;">'
+        f'<b>Trigger words:</b> {words_html}</div>'
+    )
 
 
 def list_vaes():
@@ -280,7 +341,7 @@ def switch_model(model_name):
 def switch_architecture(arch_name):
     """Switch to a different model architecture.
 
-    Returns 15 values: the last one is a gr.update to sync the other
+    Returns 13 values: the last one is a gr.update to sync the other
     Architecture dropdown to the same value.
     """
     global _active_arch
@@ -308,8 +369,6 @@ def switch_architecture(arch_name):
             gr.update(value=defaults["guidance_scale"]),
             gr.update(value=defaults["width"]),
             gr.update(value=defaults["height"]),
-            gr.update(visible=(arch_name == "Flux")),
-            gr.update(visible=(arch_name == "Flux")),
             sync_other,
         )
 
@@ -343,8 +402,6 @@ def switch_architecture(arch_name):
         gr.update(value=defaults["guidance_scale"]),
         gr.update(value=defaults["width"]),
         gr.update(value=defaults["height"]),
-        gr.update(visible=(arch_name == "Flux")),
-        gr.update(visible=(arch_name == "Flux")),
         sync_other,
     )
 
@@ -1604,10 +1661,6 @@ def build_ui():
                             lines=2,
                             max_lines=2,
                         )
-                        t2i_flux_info = gr.Markdown(
-                            "**Note:** Flux does not support negative prompts or `[token:weight]` syntax. These fields will be ignored.",
-                            visible=False,
-                        )
                         description = gr.Textbox(
                             label="Description",
                             placeholder="Additional scene details (appended to positive prompt)...",
@@ -1653,6 +1706,10 @@ def build_ui():
                                 value="None",
                                 label="LoRA 1",
                             )
+                            lora_info_1 = gr.HTML(
+                                value="", visible=True,
+                                elem_id="lora_info_1",
+                            )
                             lora_weight_1 = gr.Slider(
                                 0.0, 1.5, value=1.0,
                                 step=0.05, label="LoRA 1 Weight",
@@ -1661,6 +1718,10 @@ def build_ui():
                                 choices=list_loras(),
                                 value="None",
                                 label="LoRA 2",
+                            )
+                            lora_info_2 = gr.HTML(
+                                value="", visible=True,
+                                elem_id="lora_info_2",
                             )
                             lora_weight_2 = gr.Slider(
                                 0.0, 1.5, value=1.0,
@@ -1696,9 +1757,8 @@ def build_ui():
                         with gr.Row():
                             generate_btn = gr.Button("Generate", variant="primary")
                             stop_btn = gr.Button("Stop", variant="stop")
-                        gr.Markdown(
-                            "**Tip:** Use `[word:1.5]` for weighted prompts, "
-                            "e.g. `[green curtains:1.5] in a cozy room`"
+                        prompt_guide = gr.Markdown(
+                            value=_PROMPTING_GUIDES["SDXL / SD 1.5"]
                         )
 
                     with gr.Column(scale=1):
@@ -1732,10 +1792,20 @@ def build_ui():
                     inputs=[lora_dropdown_1],
                     outputs=[lora_dropdown_1],
                 )
+                lora_dropdown_1.change(
+                    fn=_get_lora_trigger_words,
+                    inputs=[lora_dropdown_1],
+                    outputs=[lora_info_1],
+                )
                 lora_dropdown_2.focus(
                     fn=lambda current: gr.update(choices=list_loras(), value=current),
                     inputs=[lora_dropdown_2],
                     outputs=[lora_dropdown_2],
+                )
+                lora_dropdown_2.change(
+                    fn=_get_lora_trigger_words,
+                    inputs=[lora_dropdown_2],
+                    outputs=[lora_info_2],
                 )
                 hires_upscaler.focus(
                     fn=lambda: gr.update(choices=["Lanczos"] + upscaler.get_available_upscalers()),
@@ -1856,10 +1926,6 @@ def build_ui():
                             placeholder="blurry, low quality, deformed...",
                             lines=2,
                             max_lines=2,
-                        )
-                        i2i_flux_info = gr.Markdown(
-                            "**Note:** Flux does not support negative prompts or `[token:weight]` syntax. These fields will be ignored.",
-                            visible=False,
                         )
                         i2i_description = gr.Textbox(
                             label="Description",
@@ -2656,7 +2722,7 @@ def build_ui():
                     value=-1, visible=False, elem_id="browse_selected_idx",
                 )
                 browse_model_info = gr.HTML(
-                    value='<div id="browse_model_info_display" style="padding:8px 12px; min-height:24px; border:1px solid #444; border-radius:6px; color:#ccc; background:#1a1a1a; font-size:13px;">Click a tile to select a model</div>',
+                    value='<div id="browse_model_info_display" style="padding:10px 14px; min-height:60px; border:1px solid #444; border-radius:6px; color:#ccc; background:#1a1a1a; font-size:13px; line-height:1.6;">Click a tile to select a model</div>',
                 )
                 with gr.Row():
                     browse_download_btn = gr.Button(
@@ -2688,12 +2754,52 @@ def build_ui():
                         full_name_escaped = r["name"].replace('"', "&quot;")
                         model_type_label = r.get("type", "")
                         size = r.get("file_size_str", "")
-                        # Build info string for direct JS display
+                        # Build detailed info HTML for the info panel
                         base = r.get("base_model", "")
-                        info = f"{r['name']} ({r.get('type','')}) — {base} — {r.get('filename','')} — {r.get('file_size_str','')}"
+                        civitai_url = r.get("civitai_url", "")
+                        trained_words = r.get("trained_words", [])
+                        rec = r.get("recommended_settings", {})
+
+                        # Main info line
+                        info_parts = [f"<b>{r['name']}</b> ({r.get('type','')})"]
+                        info_parts.append(f"Base: {base} — File: {r.get('filename','')} — Size: {r.get('file_size_str','')}")
                         if not r.get("download_url"):
-                            info += " | ⚠ May require API key"
-                        info_escaped = info.replace("'", "\\'").replace('"', "&quot;")
+                            info_parts.append("<span style='color:#f59e0b;'>⚠ May require API key</span>")
+
+                        # Trigger keywords
+                        if trained_words:
+                            words_str = ", ".join(f"<code>{w}</code>" for w in trained_words)
+                            info_parts.append(f"<b>Trigger words:</b> {words_str}")
+
+                        # Recommended settings
+                        settings_items = []
+                        if rec.get("cfg"):
+                            settings_items.append(f"CFG: {rec['cfg']}")
+                        if rec.get("steps"):
+                            settings_items.append(f"Steps: {rec['steps']}")
+                        if rec.get("sampler"):
+                            settings_items.append(f"Sampler: {rec['sampler']}")
+                        if rec.get("clip_skip"):
+                            settings_items.append(f"Clip Skip: {rec['clip_skip']}")
+                        if settings_items:
+                            info_parts.append(f"<b>Suggested settings:</b> {' · '.join(settings_items)}")
+
+                        # CivitAI + HuggingFace links
+                        links = []
+                        if civitai_url:
+                            links.append(f'<a href="{civitai_url}" target="_blank" style="color:#7c3aed;">View on CivitAI ↗</a>')
+                        # HuggingFace search link using model name
+                        import urllib.parse as _urlparse
+                        hf_query = _urlparse.quote_plus(r["name"])
+                        hf_url = f"https://huggingface.co/models?search={hf_query}"
+                        links.append(f'<a href="{hf_url}" target="_blank" style="color:#f59e0b;">Search on HuggingFace ↗</a>')
+                        if links:
+                            info_parts.append(" &nbsp;|&nbsp; ".join(links))
+
+                        info_html = "<br>".join(info_parts)
+                        # Escape for embedding in data attribute
+                        info_escaped = info_html.replace("&", "&amp;").replace("'", "&#39;").replace('"', "&quot;")
+
                         if img_url:
                             img_tag = (
                                 f'<img src="{img_url}" '
@@ -2717,7 +2823,7 @@ def build_ui():
                             f'this.classList.add(\'selected\');this.style.borderColor=\'#7c3aed\';'
                             f'window._browseSelectedIdx={idx};'
                             f'var el=document.getElementById(\'browse_model_info_display\');'
-                            f'if(el){{el.textContent=this.dataset.info;}}">'
+                            f'if(el){{el.innerHTML=this.dataset.info;}}">'
                             f'{img_tag}'
                             f'<div style="padding:6px; font-size:11px;">'
                             f'<div style="font-weight:600; white-space:nowrap; overflow:hidden; '
@@ -2800,6 +2906,17 @@ def build_ui():
                             filename=filename,
                             api_key=api_key or None,
                         )
+                        # Save metadata sidecar for LoRAs (trigger words, settings)
+                        if selected["type"] == "LORA":
+                            meta = {}
+                            if selected.get("trained_words"):
+                                meta["trained_words"] = selected["trained_words"]
+                            if selected.get("recommended_settings"):
+                                meta["recommended_settings"] = selected["recommended_settings"]
+                            if selected.get("civitai_url"):
+                                meta["civitai_url"] = selected["civitai_url"]
+                            if meta:
+                                civitai_save_lora_meta(str(dest_dir), filename, meta)
                         dest_type = "loras" if selected["type"] == "LORA" else "models"
                         # Refresh model dropdowns so the new file appears immediately
                         model_choices = gr.update(choices=list_models())
@@ -2987,12 +3104,16 @@ def build_ui():
             lora_dropdown_1, lora_dropdown_2,
             i2i_lora_1, i2i_lora_2,
             steps, guidance, width, height,
-            t2i_flux_info, i2i_flux_info,
         ]
         arch_dropdown.change(
             fn=switch_architecture,
             inputs=[arch_dropdown],
             outputs=_arch_outputs + [i2i_arch_dropdown],
+        )
+        arch_dropdown.change(
+            fn=lambda arch: _PROMPTING_GUIDES.get(arch, ""),
+            inputs=[arch_dropdown],
+            outputs=[prompt_guide],
         )
         i2i_arch_dropdown.change(
             fn=switch_architecture,

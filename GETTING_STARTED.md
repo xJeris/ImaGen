@@ -47,7 +47,7 @@ The **Architecture** dropdown at the top of the page lets you switch between sup
 
 Switching architecture unloads the current model and updates the model/LoRA dropdowns to show only models in that architecture's folder. Default generation parameters are updated automatically.
 
-> **Note:** Flux does not support negative prompts or `[token:weight]` weighted prompt syntax. These fields are ignored when using Flux.
+A **Prompting Guide** below the Generate button updates when you switch architectures, showing the correct prompting style for each (tag-based vs natural language, score tags for Pony, etc.).
 
 ### Base Model Dropdown
 
@@ -76,8 +76,10 @@ You can also search and download models directly from CivitAI using the **Model 
 
 1. Enter a search query or browse the default results
 2. Use the filters to narrow by model type (Checkpoint, LORA), base model (SDXL, SD 1.5, Pony, etc.), and content rating
-3. Click a tile to select it — the model name, type, and file size appear in the Selected box
+3. Click a tile to select it — the info panel shows file details, **trigger words**, **recommended settings** (CFG, steps, sampler, clip skip), and links to both **CivitAI** and **HuggingFace** (for alternative downloads)
 4. Click **Download** — the file is saved to the appropriate folder for the selected architecture (e.g. `models/pony/` or `loras/flux/`), and the model dropdowns refresh automatically
+
+When a LoRA is downloaded, a `.json` metadata sidecar is saved alongside it. This allows the trigger words to display automatically when you select the LoRA in the Text to Image tab.
 
 Some restricted models require a CivitAI API key. Expand the **API Key** section at the bottom of the browser tab to enter and save your key. The key is stored in `~/.imagen/civitai_key.txt` (outside the project folder).
 
@@ -197,6 +199,7 @@ Expand the **LoRA** accordion to apply up to two LoRAs simultaneously:
 
 - **LoRA 1 / LoRA 2** — pick from `.safetensors` files in the `loras/` folder. Set either to "None" to leave that slot unused.
 - **LoRA 1 Weight / LoRA 2 Weight** (0.0–1.5) — how strongly each LoRA style is applied
+- **Trigger Words** — if the LoRA has a metadata sidecar (auto-created when downloaded from the Model Browser), its trigger words are displayed below the dropdown. Include these words in your prompt to activate the LoRA's trained effect.
 
 Using two LoRAs at once lets you combine styles — for example, one LoRA for a specific art style and another for a character or subject.
 

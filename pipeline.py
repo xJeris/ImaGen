@@ -67,6 +67,7 @@ class ImageGenerator:
         self._is_single_file = False
         self._interrupt = False
         self._cached_embeds = None  # (pos_embeds, pos_pooled, neg_embeds, neg_pooled)
+        self._vae_name = None  # None = use model's bundled VAE
 
     def get_available_models(self):
         """List models in models/ — both diffusers folders and single checkpoint files."""
@@ -91,6 +92,56 @@ class ImageGenerator:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    def get_available_vaes(self):
+        """List VAE files in models/vaes/ directory."""
+        config.VAE_DIR.mkdir(parents=True, exist_ok=True)
+        vaes = []
+        for item in config.VAE_DIR.iterdir():
+            if item.is_file() and item.suffix == ".safetensors":
+                vaes.append(item.name)
+            elif item.is_dir():
+                vaes.append(item.name)
+        return ["Default"] + sorted(vaes)
+
+    def load_vae(self, vae_name, progress_callback=None):
+        """Swap the pipeline's VAE. Pass None or 'Default' for bundled VAE."""
+        if not vae_name or vae_name == "Default":
+            self._vae_name = None
+            return
+        if self.pipe is None:
+            # Just remember the choice; it will be applied when a model loads
+            self._vae_name = vae_name
+            return
+
+        from diffusers import AutoencoderKL
+
+        vae_path = config.VAE_DIR / vae_name
+        if progress_callback:
+            progress_callback(f"Loading VAE: {vae_name}...")
+
+        if vae_path.is_file():
+            vae = AutoencoderKL.from_single_file(
+                str(vae_path), torch_dtype=config.DTYPE,
+            )
+        else:
+            vae = AutoencoderKL.from_pretrained(
+                str(vae_path), torch_dtype=config.DTYPE, local_files_only=True,
+            )
+
+        vae.to(config.DEVICE)
+        if config.DEVICE == "cuda":
+            vae.enable_tiling()
+
+        self.pipe.vae = vae
+        self._vae_name = vae_name
+
+        # Rebuild dependent pipelines (they reference self.pipe.vae)
+        self._build_img2img()
+        self._build_inpaint()
+
+        if progress_callback:
+            progress_callback(f"VAE loaded: {vae_name}")
 
     def load_model(self, model_name=None, progress_callback=None):
         """Load a model by name from models/ directory.
@@ -166,6 +217,10 @@ class ImageGenerator:
         # Build img2img and inpaint pipelines sharing components
         self._build_img2img()
         self._build_inpaint()
+
+        # Re-apply custom VAE if one was selected before model swap
+        if self._vae_name:
+            self.load_vae(self._vae_name, progress_callback=progress_callback)
 
         # Initialize compel for prompt weighting
         self._init_compel()
@@ -355,17 +410,25 @@ class ImageGenerator:
             for i, (lora_path, weight) in enumerate(lora_list):
                 p = Path(lora_path)
                 name = f"lora_{i}"
-                self.pipe.load_lora_weights(
-                    str(p.parent), weight_name=p.name, adapter_name=name,
-                )
-                adapter_names.append(name)
-                adapter_weights.append(weight)
+                print(f"[LoRA] Loading '{p.name}' (weight={weight}) ...")
+                try:
+                    self.pipe.load_lora_weights(
+                        str(p.parent), weight_name=p.name, adapter_name=name,
+                    )
+                    adapter_names.append(name)
+                    adapter_weights.append(weight)
+                    print(f"[LoRA] '{p.name}' loaded successfully.")
+                except Exception as e:
+                    print(f"[LoRA] FAILED to load '{p.name}': {e}")
+
+        if not adapter_names:
+            print("[LoRA] No LoRAs were loaded successfully.")
+            return
 
         self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
-        self.pipe.fuse_lora(adapter_names=adapter_names)
-        # Fusing LoRAs can upcast weights to float32; cast everything back
-        self.pipe.to(dtype=config.DTYPE)
+        self.pipe.fuse_lora(adapter_names=adapter_names, safe_fusing=True)
         self._active_loras = list(lora_list)
+        print(f"[LoRA] Fuse complete. Active LoRAs: {[Path(p).name for p, _ in self._active_loras]}")
 
     def unload_loras(self):
         """Remove all active LoRAs."""
@@ -392,8 +455,12 @@ class ImageGenerator:
         scheduler_name: str = "Euler",
         offload_encoders: bool = False,
         keep_encoders_offloaded: bool = False,
+        batch_size: int = 1,
     ):
-        """Generate an image from text prompts. Returns a PIL Image.
+        """Generate image(s) from text prompts.
+
+        Returns a single PIL Image when batch_size == 1,
+        or a list of PIL Images when batch_size > 1.
 
         Args:
             offload_encoders: If True, move text encoders to CPU after
@@ -450,7 +517,10 @@ class ImageGenerator:
             kwargs["pooled_prompt_embeds"] = pos_pooled
             kwargs["negative_pooled_prompt_embeds"] = neg_pooled
 
-        image = self.pipe(**kwargs).images[0]
+        if batch_size > 1:
+            kwargs["num_images_per_prompt"] = batch_size
+
+        images = self.pipe(**kwargs).images
 
         # Restore text encoders and execution device property
         if offload_encoders and config.DEVICE == "cuda":
@@ -460,7 +530,7 @@ class ImageGenerator:
                 if hasattr(self.pipe, "text_encoder_2") and self.pipe.text_encoder_2 is not None:
                     self.pipe.text_encoder_2.to(config.DEVICE)
 
-        return image
+        return images if batch_size > 1 else images[0]
 
     def img2img(
         self,

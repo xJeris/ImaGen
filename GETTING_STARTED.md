@@ -189,6 +189,7 @@ Expand the **Advanced Settings** accordion to adjust:
 - **Sampler** — the diffusion scheduler algorithm. Options include Euler, DPM++ 2M, UniPC, and others.
 - **Width / Height** (default 1024x1024) — output resolution in multiples of 64.
 - **Seed** — set a specific seed to reproduce an image. -1 = random.
+- **Batch Size** (1–8, default 1) — generate multiple variations at once. Results appear in the output gallery as a grid. Click any image to select it for saving; a **Save All** button appears to save the entire batch.
 
 #### LoRA
 
@@ -215,9 +216,29 @@ Settings:
 - **Denoise Strength** (0.1–0.8, default 0.4) — lower = closer to original, higher = more new detail. 0.3–0.5 is the sweet spot.
 - **Hires Steps** (1–100, default 20) — inference steps for the second pass
 
+### Custom VAE
+
+The **VAE** dropdown (next to the Upscaler dropdown) lets you swap the model's VAE with a custom one:
+
+1. Download a VAE `.safetensors` file or a diffusers-format VAE directory
+2. Place it in `models/vaes/`
+3. Select it from the **VAE** dropdown — it takes effect immediately
+4. Set to "Default" to revert to the model's bundled VAE
+
+The selected VAE persists across model switches. Flux does not support custom VAE swapping (it uses a different VAE architecture).
+
 ### Saving Images
 
 Click **Save as PNG** to save the current image to the `outputs/` folder with a timestamped filename.
+
+#### Generation History
+
+Check **Save with history** (next to the Save button) before saving to embed generation metadata:
+
+- A `.json` sidecar file is saved alongside the PNG with all parameters (prompt, seed, model, LoRAs, sampler, dimensions, VAE, etc.)
+- The same metadata is embedded in the PNG file's `tEXt` chunks under the `ImaGen:params` key
+
+This is off by default. When off, images are saved as plain PNGs with no metadata.
 
 ## Prompt Profiles
 
@@ -443,7 +464,8 @@ ImaGen/
 │   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
 │   ├── pony/               # Pony architecture models
 │   ├── illustrious/        # Illustrious architecture models
-│   └── flux/               # Flux architecture models
+│   ├── flux/               # Flux architecture models
+│   └── vaes/               # Custom VAE files (auto-created)
 ├── upscalers/              # Upscaler .pth files (auto-created)
 ├── loras/                  # LoRA .safetensors files — SDXL / SD 1.5 (auto-created)
 │   ├── pony/               # Pony LoRAs
@@ -459,6 +481,7 @@ ImaGen/
 - Verify with: `python -c "import torch; print(torch.cuda.is_available())"`
 
 **Out of memory errors (images)**
+- Reduce batch size (each additional image needs more VRAM)
 - Reduce image dimensions (try 768x768 or 512x512)
 - Reduce inference steps
 - Close other GPU-intensive applications

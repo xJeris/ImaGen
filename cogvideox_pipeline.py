@@ -196,8 +196,7 @@ class CogVideoXGenerator:
                 adapter_weights.append(weight)
 
         self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
-        self.pipe.fuse_lora(adapter_names=adapter_names)
-        self.pipe.to(dtype=self.pipe.dtype)
+        self.pipe.fuse_lora(adapter_names=adapter_names, safe_fusing=True)
         self._active_loras = list(lora_list)
 
     def unload_loras(self):

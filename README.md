@@ -27,6 +27,9 @@ A fully self-contained AI image and video generator that runs entirely on your l
 - **Model Browser** — Search and download models and LoRAs from CivitAI directly within the UI
 - **Prompt Profiles** — Save and load prompt presets (positive + negative) across all tabs
 - **Multiple Samplers** — Euler, Euler Ancestral, DPM++ 2M Karras, DPM++ SDE Karras, DDIM, UniPC
+- **Batch Generation** — Generate 1–8 variations at once from the same prompt, review in the output gallery grid, save selected or all
+- **Custom VAE** — Swap the model's VAE with a custom one from the `models/vaes/` folder (SDXL, SD 1.5, Pony, Illustrious)
+- **Generation History** — Optionally save generation parameters (prompt, seed, model, etc.) as JSON sidecar files and PNG metadata
 - **Hot-Swap Models** — Switch between models from the UI without restarting
 - **Fully Offline** — After first-run model download, everything runs locally
 - **VRAM Management** — Automatic model offloading, VAE tiling, chunked VAE decode, 4-bit quantization for large video models
@@ -227,6 +230,14 @@ Click the **Video Model** dropdown to refresh after adding models.
 
 Popular upscalers: `RealESRGAN_x4plus.pth`, `RealESRGAN_x2plus.pth`, `4x-UltraSharp.pth`
 
+### Custom VAEs
+
+1. Download a VAE file (`.safetensors`) or a diffusers-format VAE directory
+2. Place it in `models/vaes/`
+3. Select it from the **VAE** dropdown on the Text to Image or Image to Image tab
+
+The VAE persists across model swaps. Set to "Default" to use the model's bundled VAE. Flux uses its own VAE architecture and does not support custom VAE swapping.
+
 ## Project Structure
 
 ```
@@ -253,7 +264,8 @@ ImaGen/
 │   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
 │   ├── pony/               # Pony architecture models
 │   ├── illustrious/        # Illustrious architecture models
-│   └── flux/               # Flux architecture models
+│   ├── flux/               # Flux architecture models
+│   └── vaes/               # Custom VAE files (.safetensors or diffusers dirs)
 ├── upscalers/              # Upscaler model files
 ├── loras/                  # LoRA adapter files (SDXL / SD 1.5)
 │   ├── pony/               # Pony LoRAs
@@ -277,7 +289,7 @@ ImaGen/
 | Problem | Solution |
 |---------|----------|
 | CUDA not available / very slow | Reinstall PyTorch with CUDA: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124` |
-| Out of memory (images) | Reduce resolution (768x768 or 512x512), reduce steps, close other GPU apps |
+| Out of memory (images) | Reduce resolution (768x768 or 512x512), reduce batch size, reduce steps, close other GPU apps |
 | Out of memory (video) | Use the 1.3B Lite model; 14B uses 4-bit quantization + chunked VAE decode automatically |
 | CogVideoX black/red frames | This is handled automatically — the pipeline decodes in float32 to avoid fp16 precision loss |
 | Model not in dropdown | Ensure it's in `models/` with a `model_index.json`; click dropdown to refresh |

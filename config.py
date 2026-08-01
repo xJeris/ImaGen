@@ -15,6 +15,7 @@ MODEL_CACHE_DIR = PROJECT_ROOT / "models"
 LORA_DIR = PROJECT_ROOT / "loras"
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 UPSCALER_DIR = PROJECT_ROOT / "upscalers"
+VAE_DIR = PROJECT_ROOT / "models" / "vaes"
 ANIMATEDIFF_DIR = PROJECT_ROOT / "models" / "animatediff"
 
 # Default model (used on first run to download)
@@ -40,6 +41,7 @@ DEFAULT_GUIDANCE_SCALE = 7.5
 DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 1024
 DEFAULT_SEED = -1
+DEFAULT_BATCH_SIZE = 1
 
 # Prompt defaults (loaded from text files)
 _pos_file = PROJECT_ROOT / "default_positive.txt"
@@ -140,5 +142,6 @@ VIDEO_ARCH_DEFAULTS = {
 
 # Auto-create architecture subdirectories
 for _d in (list(ARCH_MODEL_DIRS.values()) + list(ARCH_LORA_DIRS.values())
-           + list(VIDEO_ARCH_MODEL_DIRS.values()) + list(VIDEO_ARCH_LORA_DIRS.values())):
+           + list(VIDEO_ARCH_MODEL_DIRS.values()) + list(VIDEO_ARCH_LORA_DIRS.values())
+           + [VAE_DIR]):
     _d.mkdir(parents=True, exist_ok=True)

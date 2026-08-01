@@ -245,6 +245,15 @@ class FluxGenerator:
         self._is_single_file = False
         self._interrupt = False
         self._cached_embeds = None
+        self._vae_name = None
+
+    def get_available_vaes(self):
+        """Flux uses its own VAE architecture; custom VAE swapping is not supported."""
+        return ["Default"]
+
+    def load_vae(self, vae_name, progress_callback=None):
+        """No-op: Flux VAE cannot be swapped."""
+        self._vae_name = None
 
     def get_available_models(self):
         _MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -428,8 +437,7 @@ class FluxGenerator:
                 adapter_weights.append(weight)
 
         self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
-        self.pipe.fuse_lora(adapter_names=adapter_names)
-        self.pipe.to(dtype=config.DTYPE)
+        self.pipe.fuse_lora(adapter_names=adapter_names, safe_fusing=True)
         self._active_loras = list(lora_list)
 
     def unload_loras(self):

@@ -52,6 +52,45 @@ class PonyGenerator:
         self._is_single_file = False
         self._interrupt = False
         self._cached_embeds = None
+        self._vae_name = None
+
+    def get_available_vaes(self):
+        """List VAE files in models/vaes/ directory."""
+        config.VAE_DIR.mkdir(parents=True, exist_ok=True)
+        vaes = []
+        for item in config.VAE_DIR.iterdir():
+            if item.is_file() and item.suffix == ".safetensors":
+                vaes.append(item.name)
+            elif item.is_dir():
+                vaes.append(item.name)
+        return ["Default"] + sorted(vaes)
+
+    def load_vae(self, vae_name, progress_callback=None):
+        """Swap the pipeline's VAE."""
+        if not vae_name or vae_name == "Default":
+            self._vae_name = None
+            return
+        if self.pipe is None:
+            self._vae_name = vae_name
+            return
+
+        from diffusers import AutoencoderKL
+        vae_path = config.VAE_DIR / vae_name
+        if progress_callback:
+            progress_callback(f"Loading VAE: {vae_name}...")
+        if vae_path.is_file():
+            vae = AutoencoderKL.from_single_file(str(vae_path), torch_dtype=config.DTYPE)
+        else:
+            vae = AutoencoderKL.from_pretrained(str(vae_path), torch_dtype=config.DTYPE, local_files_only=True)
+        vae.to(config.DEVICE)
+        if config.DEVICE == "cuda":
+            vae.enable_tiling()
+        self.pipe.vae = vae
+        self._vae_name = vae_name
+        self._build_img2img()
+        self._build_inpaint()
+        if progress_callback:
+            progress_callback(f"VAE loaded: {vae_name}")
 
     def get_available_models(self):
         _MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -124,6 +163,9 @@ class PonyGenerator:
             except Exception:
                 from diffusers.models.attention_processor import AttnProcessor2_0
                 self.pipe.unet.set_attn_processor(AttnProcessor2_0())
+
+        if self._vae_name:
+            self.load_vae(self._vae_name, progress_callback=progress_callback)
 
         self._build_img2img()
         self._build_inpaint()
@@ -215,8 +257,7 @@ class PonyGenerator:
                 adapter_weights.append(weight)
 
         self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
-        self.pipe.fuse_lora(adapter_names=adapter_names)
-        self.pipe.to(dtype=config.DTYPE)
+        self.pipe.fuse_lora(adapter_names=adapter_names, safe_fusing=True)
         self._active_loras = list(lora_list)
 
     def unload_loras(self):

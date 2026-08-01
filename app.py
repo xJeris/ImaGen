@@ -169,8 +169,12 @@ def _get_active_video_lora_dir():
     return config.VIDEO_ARCH_LORA_DIRS[_active_video_arch]
 
 
-trainer = None
-_last_image = None
+_last_t2i_image = None
+_last_t2i_params = None
+_last_t2i_images = []  # batch results (list of PIL Images)
+_last_batch_index = 0  # currently selected batch image
+_last_i2i_image = None
+_last_i2i_params = None
 _last_video_path = None
 _last_anim_path = None
 
@@ -185,18 +189,71 @@ def list_loras():
     return ["None"] + get_generator().get_available_loras()
 
 
+def list_vaes():
+    """Get available VAE names for the dropdown."""
+    return get_generator().get_available_vaes()
+
+
 def list_upscalers():
     """Get available upscaler names for the dropdown."""
     return ["None"] + upscaler.get_available_upscalers()
 
 
-def switch_model(model_name):
-    """Hot-swap to a different base model."""
+def refresh_image_tab_state():
+    """Refresh model status, dropdown, LoRA, and VAE choices for the current tab.
+
+    Called on tab select to ensure the display matches the actual loaded state.
+    Returns: (status, arch_value, model_choices, lora_choices x2, vae_choices).
+    """
     gen = get_generator()
+    models = list_models()
+    loras = list_loras()
+    vaes = list_vaes()
+    if gen.pipe:
+        status = f"Loaded: {gen._model_name} ({gen._model_type})"
+    else:
+        status = f"Architecture: {_active_arch} (no model loaded)"
+    return (
+        status,
+        gr.update(value=_active_arch),
+        gr.update(choices=models, value=gen._model_name),
+        gr.update(choices=loras),
+        gr.update(choices=loras),
+        gr.update(choices=vaes, value=gen._vae_name or "Default"),
+    )
+
+
+def switch_vae(vae_name):
+    """Switch the VAE for the active generator.
+
+    Returns 3 values: status, other_status, other_vae_dropdown.
+    """
+    gen = get_generator()
+    if not vae_name or vae_name == "Default":
+        gen.load_vae(None)
+        status = f"VAE: Default (bundled)"
+        return status, status, gr.update(value="Default")
+    try:
+        gen.load_vae(vae_name, progress_callback=print)
+        status = f"VAE: {vae_name}"
+        return status, status, gr.update(value=vae_name)
+    except Exception as e:
+        err = f"Failed to load VAE: {e}"
+        return err, gr.update(), gr.update()
+
+
+def switch_model(model_name):
+    """Hot-swap to a different base model.
+
+    Returns 7 values: status, lora1, lora2 (for the calling tab),
+    then other_status, other_model, other_lora1, other_lora2 (to sync the other tab).
+    """
+    gen = get_generator()
+    no_sync = (gr.update(),) * 4
     if not model_name:
-        return "No model selected.", gr.update(), gr.update()
+        return ("No model selected.", gr.update(), gr.update()) + no_sync
     if model_name == gen._model_name:
-        return f"Already loaded: {model_name}", gr.update(), gr.update()
+        return (f"Already loaded: {model_name}", gr.update(), gr.update()) + no_sync
     try:
         # Unload other models first to free VRAM for image generation.
         if video_generator is not None:
@@ -208,15 +265,16 @@ def switch_model(model_name):
         gen.load_model(model_name, progress_callback=print)
 
         new_loras = list_loras()
+        lora_update = gr.update(choices=new_loras, value="None")
 
         status = f"Loaded: {model_name} ({gen._model_type})"
         return (
-            status,
-            gr.update(choices=new_loras, value="None"),
-            gr.update(choices=new_loras, value="None"),
+            status, lora_update, lora_update,
+            status, gr.update(value=model_name), lora_update, lora_update,
         )
     except Exception as e:
-        return f"Failed to load {model_name}: {e}", gr.update(), gr.update()
+        err = f"Failed to load {model_name}: {e}"
+        return (err, gr.update(), gr.update()) + no_sync
 
 
 def switch_architecture(arch_name):
@@ -398,9 +456,8 @@ def delete_profile(name):
 
 def _build_prompt(positive_prompt, description):
     """Build the full positive prompt from positive + description. Raises gr.Error if empty."""
-    full = positive_prompt.strip()
-    if description.strip():
-        full = f"{full}, {description.strip()}"
+    parts = [p for p in [positive_prompt.strip(), description.strip()] if p]
+    full = ", ".join(parts)
     if not full:
         raise gr.Error("Please enter a prompt.")
     return full
@@ -437,14 +494,59 @@ def _apply_upscaler(image, upscaler_name):
     return image
 
 
+def _postprocess_single(gen, image, full_prompt, negative_prompt, guidance,
+                        width, height, actual_seed, sampler, upscaler_name,
+                        hires_active, hires_upscaler, hires_scale,
+                        hires_denoise, hires_steps):
+    """Apply hires fix and upscaler to a single image. Returns (image, interrupted)."""
+    if hires_active:
+        from PIL import Image
+        target_w = int(int(width) * hires_scale)
+        target_h = int(int(height) * hires_scale)
+
+        gen.flush_vram()
+
+        if hires_upscaler and hires_upscaler != "Lanczos":
+            upscaler.load(hires_upscaler)
+            image = upscaler.upscale(image)
+            upscaler.unload()
+            if image.size != (target_w, target_h):
+                image = image.resize((target_w, target_h), Image.LANCZOS)
+        else:
+            image = image.resize((target_w, target_h), Image.LANCZOS)
+
+        gen.flush_vram()
+
+        image = gen.img2img(
+            source_image=image,
+            positive_prompt=full_prompt,
+            negative_prompt=negative_prompt,
+            strength=hires_denoise,
+            steps=int(hires_steps),
+            guidance_scale=guidance,
+            seed=actual_seed,
+            scheduler_name=sampler,
+            offload_encoders=True,
+            use_cached_embeds=True,
+        )
+
+        if gen.was_interrupted:
+            return None, True
+
+    image = _apply_upscaler(image, upscaler_name)
+    return image, False
+
+
 def generate_image(
     positive_prompt, negative_prompt, description,
     steps, guidance, width, height, seed, sampler,
     lora1_name, lora1_weight, lora2_name, lora2_weight, upscaler_name,
     hires_enable, hires_upscaler, hires_scale, hires_denoise, hires_steps,
+    batch_size,
 ):
-    global _last_image
+    global _last_t2i_image, _last_t2i_params, _last_t2i_images, _last_batch_index
     gen = get_generator()
+    batch_size = int(batch_size)
 
     # Auto-load model on first generation if none loaded yet
     if gen.pipe is None:
@@ -462,7 +564,7 @@ def generate_image(
     hires_active = hires_enable and hires_scale > 1.0
     heavy = has_loras or hires_active
 
-    image = gen.generate(
+    result = gen.generate(
         positive_prompt=full_prompt,
         negative_prompt=negative_prompt,
         steps=int(steps),
@@ -472,56 +574,85 @@ def generate_image(
         seed=actual_seed,
         scheduler_name=sampler,
         offload_encoders=heavy,
-        keep_encoders_offloaded=hires_active,  # skip GPU restore if hires follows
+        keep_encoders_offloaded=hires_active,
+        batch_size=batch_size,
     )
 
     if gen.was_interrupted:
-        return None, "Generation stopped."
+        return gr.update(), "Generation stopped.", gr.update()
 
-    # Hires Fix: upscale then img2img second pass for real detail
+    # Store generation params for history
+    _last_t2i_params = {
+        "positive_prompt": positive_prompt,
+        "negative_prompt": negative_prompt,
+        "description": description,
+        "steps": int(steps),
+        "guidance_scale": float(guidance),
+        "width": int(width),
+        "height": int(height),
+        "seed": actual_seed,
+        "sampler": sampler,
+        "model": gen._model_name,
+        "model_type": gen._model_type,
+        "architecture": _active_arch,
+        "lora1": lora1_name if lora1_name != "None" else None,
+        "lora1_weight": float(lora1_weight) if lora1_name and lora1_name != "None" else None,
+        "lora2": lora2_name if lora2_name != "None" else None,
+        "lora2_weight": float(lora2_weight) if lora2_name and lora2_name != "None" else None,
+        "upscaler": upscaler_name if upscaler_name != "None" else None,
+        "hires_fix": hires_active,
+        "vae": gen._vae_name or "Default",
+    }
     if hires_active:
-        from PIL import Image
-        target_w = int(int(width) * hires_scale)
-        target_h = int(int(height) * hires_scale)
+        _last_t2i_params.update({
+            "hires_upscaler": hires_upscaler,
+            "hires_scale": float(hires_scale),
+            "hires_denoise": float(hires_denoise),
+            "hires_steps": int(hires_steps),
+        })
 
-        # Free VRAM after first pass before upscaling
-        gen.flush_vram()
+    if batch_size > 1:
+        # Process each image through hires fix / upscaler
+        images = result  # list of PIL Images
+        processed = []
+        for img in images:
+            img, interrupted = _postprocess_single(
+                gen, img, full_prompt, negative_prompt, guidance,
+                width, height, actual_seed, sampler, upscaler_name,
+                hires_active, hires_upscaler, hires_scale,
+                hires_denoise, hires_steps,
+            )
+            if interrupted:
+                break
+            processed.append(img)
 
-        if hires_upscaler and hires_upscaler != "Lanczos":
-            # Use AI upscaler model (runs on CPU if VRAM is full)
-            upscaler.load(hires_upscaler)
-            image = upscaler.upscale(image)
-            upscaler.unload()  # free upscaler VRAM before img2img
-            # Resize to exact target if upscaler scale doesn't match
-            if image.size != (target_w, target_h):
-                image = image.resize((target_w, target_h), Image.LANCZOS)
-        else:
-            # Lanczos resize (zero VRAM)
-            image = image.resize((target_w, target_h), Image.LANCZOS)
+        if not processed:
+            return gr.update(), "Generation stopped.", gr.update()
 
-        # Free VRAM before the memory-intensive high-res diffusion pass
-        gen.flush_vram()
-
-        image = gen.img2img(
-            source_image=image,
-            positive_prompt=full_prompt,
-            negative_prompt=negative_prompt,
-            strength=hires_denoise,
-            steps=int(hires_steps),
-            guidance_scale=guidance,
-            seed=actual_seed,
-            scheduler_name=sampler,
-            offload_encoders=True,
-            use_cached_embeds=True,  # reuse embeddings from generate()
+        _last_t2i_images = processed
+        _last_batch_index = 0
+        _last_t2i_image = processed[0]
+        return (
+            gr.update(value=processed),
+            f"Seed: {actual_seed} | Batch: {len(processed)} images",
+            gr.update(visible=True),
+        )
+    else:
+        # Single image path
+        image = result
+        image, interrupted = _postprocess_single(
+            gen, image, full_prompt, negative_prompt, guidance,
+            width, height, actual_seed, sampler, upscaler_name,
+            hires_active, hires_upscaler, hires_scale,
+            hires_denoise, hires_steps,
         )
 
-        if gen.was_interrupted:
-            return None, "Generation stopped."
+        if interrupted:
+            return gr.update(), "Generation stopped.", gr.update()
 
-    # Post-process upscaler (simple enlarge, separate from hires fix)
-    image = _apply_upscaler(image, upscaler_name)
-    _last_image = image
-    return image, f"Seed: {actual_seed}"
+        _last_t2i_image = image
+        _last_t2i_images = []
+        return gr.update(value=[image]), f"Seed: {actual_seed}", gr.update(visible=False)
 
 
 def stop_generation():
@@ -530,16 +661,69 @@ def stop_generation():
     return "Stopping..."
 
 
-def save_image():
-    global _last_image
-    if _last_image is None:
+def _save_image_impl(image, params=None):
+    if image is None:
         return "No image to save. Generate an image first."
-
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = config.OUTPUT_DIR / f"img_{timestamp}.png"
-    _last_image.save(str(path), "PNG")
+
+    if params:
+        # Embed metadata into PNG tEXt chunks
+        from PIL.PngImagePlugin import PngInfo
+        import json as _json
+        png_info = PngInfo()
+        png_info.add_text("ImaGen:params", _json.dumps(params))
+        image.save(str(path), "PNG", pnginfo=png_info)
+        # Also write JSON sidecar
+        json_path = path.with_suffix(".json")
+        json_path.write_text(_json.dumps(params, indent=2), encoding="utf-8")
+    else:
+        image.save(str(path), "PNG")
+
     return f"Saved to {path}"
+
+
+def save_t2i_image(save_history):
+    params = _last_t2i_params if save_history else None
+    return _save_image_impl(_last_t2i_image, params)
+
+
+def save_i2i_image(save_history):
+    params = _last_i2i_params if save_history else None
+    return _save_image_impl(_last_i2i_image, params)
+
+
+
+def save_batch_all(save_history):
+    """Save all images from the last batch."""
+    if not _last_t2i_images:
+        return "No batch images to save."
+    params = _last_t2i_params if save_history else None
+    config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    for i, image in enumerate(_last_t2i_images, 1):
+        path = config.OUTPUT_DIR / f"img_{timestamp}_{i}.png"
+        if params:
+            from PIL.PngImagePlugin import PngInfo
+            import json as _json
+            png_info = PngInfo()
+            png_info.add_text("ImaGen:params", _json.dumps(params))
+            image.save(str(path), "PNG", pnginfo=png_info)
+            json_path = path.with_suffix(".json")
+            json_path.write_text(_json.dumps(params, indent=2), encoding="utf-8")
+        else:
+            image.save(str(path), "PNG")
+    return f"Saved {len(_last_t2i_images)} images to {config.OUTPUT_DIR}"
+
+
+def select_batch_image(evt: gr.SelectData):
+    """Handle click on a batch gallery image — updates which image Save will use."""
+    global _last_batch_index, _last_t2i_image
+    _last_batch_index = evt.index
+    if _last_t2i_images and evt.index < len(_last_t2i_images):
+        _last_t2i_image = _last_t2i_images[evt.index]
+
 
 
 def img2img_generate(
@@ -548,7 +732,7 @@ def img2img_generate(
     strength, steps, guidance, seed, sampler,
     lora1_name, lora1_weight, lora2_name, lora2_weight, upscaler_name,
 ):
-    global _last_image
+    global _last_i2i_image, _last_i2i_params
     gen = get_generator()
 
     # Auto-load model on first generation if none loaded yet
@@ -615,12 +799,31 @@ def img2img_generate(
         return None, "Generation stopped."
 
     image = _apply_upscaler(image, upscaler_name)
-    _last_image = image
+    _last_i2i_image = image
+    _last_i2i_params = {
+        "positive_prompt": positive_prompt,
+        "negative_prompt": negative_prompt,
+        "description": description,
+        "strength": float(strength),
+        "steps": int(steps),
+        "guidance_scale": float(guidance),
+        "seed": actual_seed,
+        "sampler": sampler,
+        "model": gen._model_name,
+        "model_type": gen._model_type,
+        "architecture": _active_arch,
+        "mode": "inpaint" if inpaint_enabled else "img2img",
+        "lora1": lora1_name if lora1_name != "None" else None,
+        "lora1_weight": float(lora1_weight) if lora1_name and lora1_name != "None" else None,
+        "lora2": lora2_name if lora2_name != "None" else None,
+        "lora2_weight": float(lora2_weight) if lora2_name and lora2_name != "None" else None,
+        "upscaler": upscaler_name if upscaler_name != "None" else None,
+        "vae": gen._vae_name or "Default",
+    }
     return image, f"Seed: {actual_seed}"
 
 
 def start_training(image_dir, lora_name, steps, learning_rate, rank):
-    global trainer
     if not image_dir or not image_dir.strip():
         raise gr.Error("Please provide a training images directory.")
     if not lora_name or not lora_name.strip():
@@ -636,11 +839,10 @@ def start_training(image_dir, lora_name, steps, learning_rate, rank):
 
     from training import LoRATrainer
     trainer = LoRATrainer(gen)
-    log_output = []
+    log_output = [None]
 
     def on_progress(msg):
-        log_output.clear()
-        log_output.append(msg)
+        log_output[0] = msg
 
     try:
         trainer.train(
@@ -654,7 +856,7 @@ def start_training(image_dir, lora_name, steps, learning_rate, rank):
     except Exception as e:
         return f"Training failed: {e}"
 
-    return log_output[-1] if log_output else "Training complete."
+    return log_output[0] or "Training complete."
 
 
 # === Video functions ===
@@ -962,7 +1164,7 @@ def anim_generate(
         vae_batch_frames=8,
     )
 
-    if frames is None:
+    if frames is None or len(frames) == 0:
         yield None, "Generation stopped."
         return
 
@@ -1243,6 +1445,7 @@ button.secondary:hover {
     padding: 0.15rem 0.4rem;
     border-radius: 4px;
 }
+
 """
 
 
@@ -1300,7 +1503,6 @@ def _get_system_stats():
 
 def build_ui():
     with gr.Blocks(title="ImaGen — Text to Image & Video", fill_width=True) as app:
-        gr.HTML(f"<style>{CUSTOM_CSS}</style>")
         with gr.Row():
             with gr.Column(scale=9):
                 sys_stats = _get_system_stats()
@@ -1341,7 +1543,7 @@ def build_ui():
 
         with gr.Tabs():
             # === Text to Image tab ===
-            with gr.Tab("Text to Image"):
+            with gr.Tab("Text to Image") as t2i_tab:
                 with gr.Row():
                     arch_dropdown = gr.Dropdown(
                         choices=config.ARCHITECTURES,
@@ -1354,6 +1556,12 @@ def build_ui():
                         value=get_generator()._model_name,
                         label="Base Model",
                         scale=3,
+                    )
+                    vae_dropdown = gr.Dropdown(
+                        choices=list_vaes(),
+                        value="Default",
+                        label="VAE",
+                        scale=2,
                     )
                     upscaler_dropdown = gr.Dropdown(
                         choices=list_upscalers(),
@@ -1433,6 +1641,11 @@ def build_ui():
                                 value=config.DEFAULT_SEED,
                                 label="Seed (-1 = random)",
                             )
+                            batch_size = gr.Slider(
+                                1, 8, value=config.DEFAULT_BATCH_SIZE,
+                                step=1, label="Batch Size",
+                                info="Generate multiple variations at once",
+                            )
 
                         with gr.Accordion("LoRA", open=False):
                             lora_dropdown_1 = gr.Dropdown(
@@ -1489,26 +1702,31 @@ def build_ui():
                         )
 
                     with gr.Column(scale=1):
-                        output_image = gr.Image(
+                        output_gallery = gr.Gallery(
                             label="Generated Image",
                             show_label=False,
-                            type="pil",
+                            columns=4,
+                            object_fit="contain",
+                            height="auto",
                             interactive=False,
                         )
                         seed_display = gr.Textbox(
                             label="", interactive=False, show_label=False,
                             placeholder="Seed will appear here after generation",
                         )
-                        save_btn = gr.Button("Save as PNG")
+                        with gr.Row():
+                            save_btn = gr.Button("Save as PNG")
+                            t2i_save_history = gr.Checkbox(
+                                label="Save with history",
+                                value=False,
+                            )
+                        with gr.Row(visible=False) as batch_buttons:
+                            batch_save_all = gr.Button("Save All")
                         save_status = gr.Textbox(
                             label="", interactive=False, show_label=False,
                         )
 
-                model_dropdown.change(
-                    fn=switch_model,
-                    inputs=[model_dropdown],
-                    outputs=[model_status, lora_dropdown_1, lora_dropdown_2],
-                )
+                # model_dropdown.change wired after both tabs (needs i2i components)
                 lora_dropdown_1.focus(
                     fn=lambda current: gr.update(choices=list_loras(), value=current),
                     inputs=[lora_dropdown_1],
@@ -1523,6 +1741,10 @@ def build_ui():
                     fn=lambda: gr.update(choices=["Lanczos"] + upscaler.get_available_upscalers()),
                     outputs=[hires_upscaler],
                 )
+                vae_dropdown.focus(
+                    fn=lambda: gr.update(choices=list_vaes()),
+                    outputs=[vae_dropdown],
+                )
                 generate_btn.click(
                     fn=generate_image,
                     inputs=[
@@ -1531,14 +1753,28 @@ def build_ui():
                         lora_dropdown_1, lora_weight_1, lora_dropdown_2, lora_weight_2,
                         upscaler_dropdown,
                         hires_enable, hires_upscaler, hires_scale, hires_denoise, hires_steps,
+                        batch_size,
                     ],
-                    outputs=[output_image, seed_display],
+                    outputs=[output_gallery, seed_display, batch_buttons],
                 )
                 stop_btn.click(fn=stop_generation, outputs=[seed_display])
-                save_btn.click(fn=save_image, outputs=[save_status])
+                save_btn.click(
+                    fn=save_t2i_image,
+                    inputs=[t2i_save_history],
+                    outputs=[save_status],
+                )
+                output_gallery.select(
+                    fn=select_batch_image,
+                    outputs=[],
+                )
+                batch_save_all.click(
+                    fn=save_batch_all,
+                    inputs=[t2i_save_history],
+                    outputs=[save_status],
+                )
 
             # === Img2Img tab ===
-            with gr.Tab("Image to Image"):
+            with gr.Tab("Image to Image") as i2i_tab:
                 with gr.Row():
                     i2i_arch_dropdown = gr.Dropdown(
                         choices=config.ARCHITECTURES,
@@ -1552,6 +1788,12 @@ def build_ui():
                         label="Base Model",
                         scale=3,
                     )
+                    i2i_vae_dropdown = gr.Dropdown(
+                        choices=list_vaes(),
+                        value="Default",
+                        label="VAE",
+                        scale=2,
+                    )
                     i2i_upscaler_dropdown = gr.Dropdown(
                         choices=list_upscalers(),
                         value="None",
@@ -1559,7 +1801,7 @@ def build_ui():
                         scale=2,
                     )
                     i2i_model_status = gr.Textbox(
-                        value=f"Loaded: {get_generator()._model_name} ({get_generator()._model_type})",
+                        value=f"Loaded: {get_generator()._model_name} ({get_generator()._model_type})" if get_generator().pipe else "No model loaded — select one above or click Generate",
                         label="Status",
                         interactive=False,
                         scale=2,
@@ -1690,16 +1932,17 @@ def build_ui():
                             label="", interactive=False, show_label=False,
                             placeholder="Seed will appear here after generation",
                         )
-                        i2i_save_btn = gr.Button("Save as PNG")
+                        with gr.Row():
+                            i2i_save_btn = gr.Button("Save as PNG")
+                            i2i_save_history = gr.Checkbox(
+                                label="Save with history",
+                                value=False,
+                            )
                         i2i_save_status = gr.Textbox(
                             label="", interactive=False, show_label=False,
                         )
 
-                i2i_model_dropdown.change(
-                    fn=switch_model,
-                    inputs=[i2i_model_dropdown],
-                    outputs=[i2i_model_status, i2i_lora_1, i2i_lora_2],
-                )
+                # i2i_model_dropdown.change wired after both tabs (needs t2i components)
                 i2i_lora_1.focus(
                     fn=lambda current: gr.update(choices=list_loras(), value=current),
                     inputs=[i2i_lora_1],
@@ -1730,8 +1973,16 @@ def build_ui():
                     ],
                     outputs=[i2i_output, i2i_seed_display],
                 )
+                i2i_vae_dropdown.focus(
+                    fn=lambda: gr.update(choices=list_vaes()),
+                    outputs=[i2i_vae_dropdown],
+                )
                 i2i_stop_btn.click(fn=stop_generation, outputs=[i2i_seed_display])
-                i2i_save_btn.click(fn=save_image, outputs=[i2i_save_status])
+                i2i_save_btn.click(
+                    fn=save_i2i_image,
+                    inputs=[i2i_save_history],
+                    outputs=[i2i_save_status],
+                )
 
             # === Text to Video tab ===
             with gr.Tab("Text to Video"):
@@ -2386,6 +2637,7 @@ def build_ui():
                 # Results as a selectable list (name, type, size)
                 browse_results_state = gr.State([])  # holds full result dicts
                 browse_cursor_state = gr.State(None)  # next page cursor
+                browse_cursor_history = gr.State([])  # stack of previous cursors
                 browse_page_num_state = gr.State(1)  # display page number
                 browse_results_display = gr.HTML(
                     value="<div style='color:#888; padding:1em;'>Click Search to load results.</div>",
@@ -2480,7 +2732,12 @@ def build_ui():
                     )
                     return grid
 
-                def _browse_do_search(query, model_type, base_model, content, sort, per_page, cursor, page_num):
+                def _browse_do_search(query, model_type, base_model, content, sort, per_page, cursor, page_num, history):
+                    """Run a CivitAI search.
+
+                    ``history`` is a list of cursors used to fetch each page so far,
+                    where history[0] = None (page 1), history[1] = cursor for page 2, etc.
+                    """
                     try:
                         results, next_cursor = civitai_search(
                             query=query, model_type=model_type, sort=sort,
@@ -2491,29 +2748,34 @@ def build_ui():
                     except Exception as e:
                         return (
                             [], "<div style='color:red;'>Search failed: " + str(e) + "</div>",
-                            f"Search failed: {e}", None, page_num,
+                            f"Search failed: {e}", None, list(history), page_num,
                             f"Page {page_num}",
                         )
                     tiles_html = _build_tiles_html(results)
                     has_more = " →" if next_cursor else " (last page)"
                     status = f"{len(results)} results — page {page_num}{has_more}"
                     return (
-                        results, tiles_html, status, next_cursor, page_num,
+                        results, tiles_html, status, next_cursor, list(history), page_num,
                         f"Page {page_num}",
                     )
 
                 def _browse_search_fresh(query, model_type, base_model, content, sort, per_page):
-                    return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, 1)
+                    return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, 1, [None])
 
-                def _browse_next(query, model_type, base_model, content, sort, per_page, cursor, page_num):
+                def _browse_next(query, model_type, base_model, content, sort, per_page, cursor, history, page_num):
                     if not cursor:
-                        return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, page_num)
-                    return _browse_do_search(query, model_type, base_model, content, sort, per_page, cursor, page_num + 1)
+                        return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, page_num, history)
+                    # Append the cursor for this new page to history
+                    new_history = list(history) + [cursor]
+                    return _browse_do_search(query, model_type, base_model, content, sort, per_page, cursor, page_num + 1, new_history)
 
-                def _browse_prev(query, model_type, base_model, content, sort, per_page, cursor, page_num):
-                    if page_num <= 1:
-                        return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, 1)
-                    return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, 1)
+                def _browse_prev(query, model_type, base_model, content, sort, per_page, cursor, history, page_num):
+                    if page_num <= 1 or len(history) < 2:
+                        return _browse_do_search(query, model_type, base_model, content, sort, per_page, None, 1, [None])
+                    # Go back: drop current page's cursor, use the previous page's cursor
+                    new_history = list(history[:-1])
+                    prev_cursor = new_history[-1]  # None for page 1
+                    return _browse_do_search(query, model_type, base_model, content, sort, per_page, prev_cursor, page_num - 1, new_history)
 
                 def _browse_download_selected(results, selected_idx, api_key_input):
                     no_update = gr.update()
@@ -2561,8 +2823,8 @@ def build_ui():
                 _search_inputs = [browse_query, browse_type, browse_base_model, browse_content, browse_sort, browse_per_page]
                 _search_outputs = [
                     browse_results_state, browse_results_display,
-                    browse_status, browse_cursor_state, browse_page_num_state,
-                    browse_page_label,
+                    browse_status, browse_cursor_state, browse_cursor_history,
+                    browse_page_num_state, browse_page_label,
                 ]
                 browse_btn.click(
                     fn=_browse_search_fresh,
@@ -2576,12 +2838,12 @@ def build_ui():
                 )
                 browse_next_btn.click(
                     fn=_browse_next,
-                    inputs=_search_inputs + [browse_cursor_state, browse_page_num_state],
+                    inputs=_search_inputs + [browse_cursor_state, browse_cursor_history, browse_page_num_state],
                     outputs=_search_outputs,
                 )
                 browse_prev_btn.click(
                     fn=_browse_prev,
-                    inputs=_search_inputs + [browse_cursor_state, browse_page_num_state],
+                    inputs=_search_inputs + [browse_cursor_state, browse_cursor_history, browse_page_num_state],
                     outputs=_search_outputs,
                 )
 
@@ -2610,7 +2872,7 @@ def build_ui():
                     except Exception:
                         return (
                             [], "<div style='color:#888; padding:1em;'>Click Search to load results.</div>",
-                            "Ready", None, 1, "Page 1",
+                            "Ready", None, [None], 1, "Page 1",
                         )
 
                 browse_tab.select(
@@ -2692,6 +2954,32 @@ def build_ui():
             outputs=[profile_panel],
         )
 
+        # ── Model switching (cross-tab sync, wired here so both tabs' components exist) ──
+        model_dropdown.change(
+            fn=switch_model,
+            inputs=[model_dropdown],
+            outputs=[model_status, lora_dropdown_1, lora_dropdown_2,
+                     i2i_model_status, i2i_model_dropdown, i2i_lora_1, i2i_lora_2],
+        )
+        i2i_model_dropdown.change(
+            fn=switch_model,
+            inputs=[i2i_model_dropdown],
+            outputs=[i2i_model_status, i2i_lora_1, i2i_lora_2,
+                     model_status, model_dropdown, lora_dropdown_1, lora_dropdown_2],
+        )
+
+        # ── VAE switching (cross-tab sync) ──
+        vae_dropdown.change(
+            fn=switch_vae,
+            inputs=[vae_dropdown],
+            outputs=[model_status, i2i_model_status, i2i_vae_dropdown],
+        )
+        i2i_vae_dropdown.change(
+            fn=switch_vae,
+            inputs=[i2i_vae_dropdown],
+            outputs=[i2i_model_status, model_status, vae_dropdown],
+        )
+
         # ── Architecture switching (both dropdowns stay in sync) ──
         _arch_outputs = [
             model_status, i2i_model_status,
@@ -2710,6 +2998,18 @@ def build_ui():
             fn=switch_architecture,
             inputs=[i2i_arch_dropdown],
             outputs=_arch_outputs + [arch_dropdown],
+        )
+
+        # ── Tab select handlers (refresh stale state when switching tabs) ──
+        t2i_tab.select(
+            fn=refresh_image_tab_state,
+            outputs=[model_status, arch_dropdown, model_dropdown,
+                     lora_dropdown_1, lora_dropdown_2, vae_dropdown],
+        )
+        i2i_tab.select(
+            fn=refresh_image_tab_state,
+            outputs=[i2i_model_status, i2i_arch_dropdown, i2i_model_dropdown,
+                     i2i_lora_1, i2i_lora_2, i2i_vae_dropdown],
         )
 
     return app

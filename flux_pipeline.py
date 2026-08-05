@@ -275,6 +275,33 @@ class FluxGenerator:
                 loras.append(f.name)
         return sorted(loras)
 
+    def needs_encoder_download(self, model_name):
+        """Check if loading this model will require downloading components.
+
+        Returns a description string if downloads are needed, or None if
+        everything is cached locally.
+        """
+        local_path = _MODEL_DIR / model_name
+        if not local_path.is_file():
+            return None  # diffusers directory — fully self-contained
+
+        clip_cached = (_ENCODERS_DIR / "clip").exists() and any((_ENCODERS_DIR / "clip").iterdir())
+        t5_cached = (_ENCODERS_DIR / "t5" / _T5_FILENAME).exists()
+        if clip_cached and t5_cached:
+            return None  # already cached
+
+        parts = []
+        if not clip_cached:
+            parts.append("CLIP text encoder (~0.9 GB)")
+        if not t5_cached:
+            parts.append("T5-XXL text encoder (~4.9 GB)")
+        return (
+            f"This single-file checkpoint requires downloading: "
+            f"{', '.join(parts)}. Files will be cached in "
+            f"models/flux/_encoders/ for offline use afterward. "
+            f"Select the model again to confirm and begin download."
+        )
+
     def unload_model(self):
         self._active_loras = []
         self.pipe = None

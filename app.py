@@ -106,6 +106,7 @@ def estimate_animatediff_vram_gb(num_frames: int, width: int = 512, height: int 
 
 generators = {"SDXL / SD 1.5": ImageGenerator()}
 _active_arch = "SDXL / SD 1.5"
+_pending_download_model = None  # model name awaiting user confirmation for encoder download
 video_generator = None  # lazy-loaded on first use
 cogvideox_generator = None  # lazy-loaded on first use
 animatediff_generator = None  # lazy-loaded on first use
@@ -146,6 +147,16 @@ _PROMPTING_GUIDES = {
         "**Note:** Prompt weighting `[word:1.5]` is also not supported.\n\n"
         "**Settings:** CFG 3–4 · 20–30 steps"
     ),
+    "Krea 2": (
+        "**Krea 2** — Natural language descriptions with rich detail.\n\n"
+        "**Positive:** Describe the scene naturally. Krea 2 excels at aesthetic, "
+        "stylistic imagery.\n\n"
+        "**Negative:** Not supported — Krea 2 Turbo does not use classifier-free "
+        "guidance.\n\n"
+        "**Note:** Prompt weighting `[word:1.5]` is not supported. "
+        "Image-to-image and inpainting are not yet available.\n\n"
+        "**Settings:** CFG 0 · 8 steps (Turbo)"
+    ),
 }
 
 
@@ -163,6 +174,9 @@ def get_generator():
         elif _active_arch == "Flux":
             from flux_pipeline import FluxGenerator
             gen = FluxGenerator()
+        elif _active_arch == "Krea 2":
+            from krea2_pipeline import Krea2Generator
+            gen = Krea2Generator()
         generators[_active_arch] = gen
     return gen
 
@@ -306,15 +320,50 @@ def switch_vae(vae_name):
 def switch_model(model_name):
     """Hot-swap to a different base model.
 
-    Returns 7 values: status, lora1, lora2 (for the calling tab),
-    then other_status, other_model, other_lora1, other_lora2 (to sync the other tab).
+    Returns 8 values: status, model_dropdown, lora1, lora2 (for the calling
+    tab), then other_status, other_model, other_lora1, other_lora2 (to sync
+    the other tab).
     """
+    global _pending_download_model
+
     gen = get_generator()
     no_sync = (gr.update(),) * 4
+    no_change = gr.update()
     if not model_name:
-        return ("No model selected.", gr.update(), gr.update()) + no_sync
+        if not _pending_download_model:
+            _pending_download_model = None
+            return ("No model selected.", no_change, no_change, no_change) + no_sync
+        # Dropdown was reset after showing a download warning — keep the
+        # warning visible and preserve pending state so re-select confirms.
+        return (no_change, no_change, no_change, no_change) + no_sync
     if model_name == gen._model_name:
-        return (f"Already loaded: {model_name}", gr.update(), gr.update()) + no_sync
+        if _pending_download_model:
+            # Dropdown was reset to the loaded model after a download
+            # warning — preserve pending state so re-select confirms.
+            return (no_change, no_change, no_change, no_change) + no_sync
+        return (f"Already loaded: {model_name}", no_change, no_change, no_change) + no_sync
+
+    # Check if the model needs to download encoder components (single-file
+    # checkpoints for Flux/Krea 2 don't include text encoders or VAE).
+    # First selection shows a warning and resets the dropdown to the
+    # currently loaded model. The user can re-select to confirm.
+    if hasattr(gen, "needs_encoder_download"):
+        download_msg = gen.needs_encoder_download(model_name)
+        if download_msg and _pending_download_model != model_name:
+            _pending_download_model = model_name
+            warning = (
+                f"⚠ Internet connection required: {download_msg}"
+            )
+            # Reset dropdown to the currently loaded model so the user
+            # can re-select the same model to confirm download.
+            prev = gen._model_name  # may be None if nothing loaded
+            return (
+                warning, gr.update(value=prev), no_change, no_change,
+            ) + no_sync
+
+    # Clear pending state — user confirmed or no download needed
+    _pending_download_model = None
+
     try:
         # Unload other models first to free VRAM for image generation.
         if video_generator is not None:
@@ -329,13 +378,17 @@ def switch_model(model_name):
         lora_update = gr.update(choices=new_loras, value="None")
 
         status = f"Loaded: {model_name} ({gen._model_type})"
+        # Don't sync to the other tab if the active arch is T2I-only
+        if _active_arch in config.I2I_ARCHITECTURES:
+            other = (status, gr.update(value=model_name), lora_update, lora_update)
+        else:
+            other = (no_change, no_change, no_change, no_change)
         return (
-            status, lora_update, lora_update,
             status, gr.update(value=model_name), lora_update, lora_update,
-        )
+        ) + other
     except Exception as e:
         err = f"Failed to load {model_name}: {e}"
-        return (err, gr.update(), gr.update()) + no_sync
+        return (err, no_change, no_change, no_change) + no_sync
 
 
 def switch_architecture(arch_name):
@@ -347,7 +400,19 @@ def switch_architecture(arch_name):
     global _active_arch
 
     defaults = config.ARCH_DEFAULTS[arch_name]
-    sync_other = gr.update(value=arch_name)
+    # Sync the other tab's arch dropdown — but only if the architecture is
+    # available on that tab. Krea 2 is T2I-only (no img2img support), so
+    # don't push it to the I2I arch dropdown.
+    sync_other = (
+        gr.update(value=arch_name)
+        if arch_name in config.I2I_ARCHITECTURES
+        else gr.update()
+    )
+
+    # When the arch is T2I-only (e.g. Krea 2), don't push model/lora
+    # changes to the I2I tab — leave it on its current state.
+    i2i_ok = arch_name in config.I2I_ARCHITECTURES
+    noop = gr.update()
 
     if arch_name == _active_arch:
         gen = get_generator()
@@ -358,13 +423,14 @@ def switch_architecture(arch_name):
             if gen.pipe else f"Architecture: {arch_name} (no model loaded)"
         )
         return (
-            status, status,
+            status,
+            status if i2i_ok else noop,
             gr.update(choices=models, value=gen._model_name),
-            gr.update(choices=models, value=gen._model_name),
+            gr.update(choices=models, value=gen._model_name) if i2i_ok else noop,
             gr.update(choices=loras, value="None"),
             gr.update(choices=loras, value="None"),
-            gr.update(choices=loras, value="None"),
-            gr.update(choices=loras, value="None"),
+            gr.update(choices=loras, value="None") if i2i_ok else noop,
+            gr.update(choices=loras, value="None") if i2i_ok else noop,
             gr.update(value=defaults["steps"]),
             gr.update(value=defaults["guidance_scale"]),
             gr.update(value=defaults["width"]),
@@ -391,13 +457,14 @@ def switch_architecture(arch_name):
 
     status = f"Architecture: {arch_name} (no model loaded)"
     return (
-        status, status,
+        status,
+        status if i2i_ok else noop,
         gr.update(choices=models, value=None),
-        gr.update(choices=models, value=None),
+        gr.update(choices=models, value=None) if i2i_ok else noop,
         gr.update(choices=loras, value="None"),
         gr.update(choices=loras, value="None"),
-        gr.update(choices=loras, value="None"),
-        gr.update(choices=loras, value="None"),
+        gr.update(choices=loras, value="None") if i2i_ok else noop,
+        gr.update(choices=loras, value="None") if i2i_ok else noop,
         gr.update(value=defaults["steps"]),
         gr.update(value=defaults["guidance_scale"]),
         gr.update(value=defaults["width"]),
@@ -1674,7 +1741,7 @@ def build_ui():
                                 step=1, label="Inference Steps",
                             )
                             guidance = gr.Slider(
-                                1.0, 20.0, value=config.DEFAULT_GUIDANCE_SCALE,
+                                0.0, 20.0, value=config.DEFAULT_GUIDANCE_SCALE,
                                 step=0.5, label="Guidance Scale",
                             )
                             sampler = gr.Dropdown(
@@ -1847,7 +1914,7 @@ def build_ui():
             with gr.Tab("Image to Image") as i2i_tab:
                 with gr.Row():
                     i2i_arch_dropdown = gr.Dropdown(
-                        choices=config.ARCHITECTURES,
+                        choices=config.I2I_ARCHITECTURES,
                         value="SDXL / SD 1.5",
                         label="Architecture",
                         scale=2,
@@ -3075,13 +3142,13 @@ def build_ui():
         model_dropdown.change(
             fn=switch_model,
             inputs=[model_dropdown],
-            outputs=[model_status, lora_dropdown_1, lora_dropdown_2,
+            outputs=[model_status, model_dropdown, lora_dropdown_1, lora_dropdown_2,
                      i2i_model_status, i2i_model_dropdown, i2i_lora_1, i2i_lora_2],
         )
         i2i_model_dropdown.change(
             fn=switch_model,
             inputs=[i2i_model_dropdown],
-            outputs=[i2i_model_status, i2i_lora_1, i2i_lora_2,
+            outputs=[i2i_model_status, i2i_model_dropdown, i2i_lora_1, i2i_lora_2,
                      model_status, model_dropdown, lora_dropdown_1, lora_dropdown_2],
         )
 
@@ -3127,8 +3194,17 @@ def build_ui():
             outputs=[model_status, arch_dropdown, model_dropdown,
                      lora_dropdown_1, lora_dropdown_2, vae_dropdown],
         )
+        def _refresh_i2i_tab_state():
+            """Like refresh_image_tab_state but clamps arch to I2I-supported list."""
+            result = list(refresh_image_tab_state())
+            # result[1] is the arch dropdown update — don't set an arch
+            # that isn't available in the I2I dropdown (e.g. Krea 2).
+            if _active_arch not in config.I2I_ARCHITECTURES:
+                result[1] = gr.update()
+            return tuple(result)
+
         i2i_tab.select(
-            fn=refresh_image_tab_state,
+            fn=_refresh_i2i_tab_state,
             outputs=[i2i_model_status, i2i_arch_dropdown, i2i_model_dropdown,
                      i2i_lora_1, i2i_lora_2, i2i_vae_dropdown],
         )

@@ -2,7 +2,7 @@
 
 **Offline text-to-image, image-to-image & text-to-video generation.**
 
-A fully self-contained AI image and video generator that runs entirely on your local machine — no internet connection required after initial setup. Built with Stable Diffusion (SDXL / SD 1.5), Pony, Illustrious, and Flux for images, and WAN 2.1 + CogVideoX for video, wrapped in a clean Gradio web UI.
+A fully self-contained AI image and video generator that runs entirely on your local machine — no internet connection required after initial setup. Built with Stable Diffusion (SDXL / SD 1.5), Pony, Illustrious, Flux, and Krea 2 for images, and WAN 2.1 + CogVideoX for video, wrapped in a clean Gradio web UI.
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-CUDA-green)
@@ -12,7 +12,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 
 ## Features
 
-- **Multi-Architecture Support** — Switch between SDXL / SD 1.5, Pony, Illustrious, and Flux architectures from the UI with per-architecture defaults
+- **Multi-Architecture Support** — Switch between SDXL / SD 1.5, Pony, Illustrious, Flux, and Krea 2 architectures from the UI with per-architecture defaults
 - **Text to Image** — Generate images from text prompts using any supported architecture
 - **Image to Image** — Upload an image and transform it with text-guided diffusion
 - **Inpainting** — Paint a mask over part of an image and regenerate just that area
@@ -87,7 +87,7 @@ Once loaded, open **http://127.0.0.1:7860** in your browser.
 
 ### Text to Image
 
-1. Select an **Architecture** (SDXL / SD 1.5, Pony, Illustrious, or Flux)
+1. Select an **Architecture** (SDXL / SD 1.5, Pony, Illustrious, Flux, or Krea 2)
 2. Enter a **Positive Prompt** describing what you want
 3. Enter a **Negative Prompt** for things to avoid
 4. Click **Generate**
@@ -202,10 +202,15 @@ The trained LoRA is saved to `loras/` and immediately available in the LoRA drop
    - **Pony** → `models/pony/`
    - **Illustrious** → `models/illustrious/`
    - **Flux** → `models/flux/`
+   - **Krea 2** → `models/krea2/` (diffusers directory or single `.safetensors` file)
 3. Select the matching architecture from the **Architecture** dropdown
 4. Click the **Base Model** dropdown to refresh — the model appears automatically
 
-LoRA files follow the same pattern (`loras/`, `loras/pony/`, `loras/illustrious/`, `loras/flux/`).
+LoRA files follow the same pattern (`loras/`, `loras/pony/`, `loras/illustrious/`, `loras/flux/`, `loras/krea2/`).
+
+> **Krea 2 Note:** Single-file `.safetensors` checkpoints contain only the transformer weights. On first load, the text encoder (~9GB) and VAE (~254MB) will be automatically downloaded from HuggingFace and cached in `models/krea2/_encoders/`. This is the only time an internet connection is needed. Diffusers-format directories include all components and work fully offline.
+>
+> **Supported formats:** bf16, fp16, and non-scaled fp8 checkpoints (e.g. AlperKTS/Krea2_FP8). Both diffusers and ComfyUI key naming conventions are auto-detected. **Not supported:** FP8-scaled checkpoints (e.g. `_fp8_scaled` variants) and INT8 checkpoints — these use quantization formats that are incompatible with diffusers.
 
 ### Video Models
 
@@ -238,7 +243,7 @@ Popular upscalers: `RealESRGAN_x4plus.pth`, `RealESRGAN_x2plus.pth`, `4x-UltraSh
 2. Place it in `models/vaes/`
 3. Select it from the **VAE** dropdown on the Text to Image or Image to Image tab
 
-The VAE persists across model swaps. Set to "Default" to use the model's bundled VAE. Flux uses its own VAE architecture and does not support custom VAE swapping.
+The VAE persists across model swaps. Set to "Default" to use the model's bundled VAE. Flux and Krea 2 use their own VAE architectures and do not support custom VAE swapping.
 
 ## Project Structure
 
@@ -246,6 +251,8 @@ The VAE persists across model swaps. Set to "Default" to use the model's bundled
 ImaGen/
 ├── app.py                  # Gradio web UI
 ├── pipeline.py             # Image generation pipeline (txt2img, img2img, inpainting)
+├── flux_pipeline.py        # Flux image generation pipeline
+├── krea2_pipeline.py       # Krea 2 image generation pipeline (12.9B DiT, Turbo/Raw)
 ├── video_pipeline.py       # Video generation pipeline (WAN 2.1)
 ├── cogvideox_pipeline.py    # CogVideoX video pipeline (2b/5b, fp16 diffusion + fp32 VAE decode)
 ├── video_chunker.py        # VRAM-safe video generation (single-pass diffusion + chunked VAE decode)
@@ -267,12 +274,15 @@ ImaGen/
 │   ├── pony/               # Pony architecture models
 │   ├── illustrious/        # Illustrious architecture models
 │   ├── flux/               # Flux architecture models
+│   ├── krea2/              # Krea 2 architecture models
+│   │   └── _encoders/      # Auto-cached text encoder + VAE (single-file loading)
 │   └── vaes/               # Custom VAE files (.safetensors or diffusers dirs)
 ├── upscalers/              # Upscaler model files
 ├── loras/                  # LoRA adapter files (SDXL / SD 1.5)
 │   ├── pony/               # Pony LoRAs
 │   ├── illustrious/        # Illustrious LoRAs
-│   └── flux/               # Flux LoRAs
+│   ├── flux/               # Flux LoRAs
+│   └── krea2/              # Krea 2 LoRAs
 └── outputs/                # Saved images and videos
 ```
 
@@ -296,6 +306,9 @@ ImaGen/
 | CogVideoX black/red frames | This is handled automatically — the pipeline decodes in float32 to avoid fp16 precision loss |
 | Model not in dropdown | Ensure it's in `models/` with a `model_index.json`; click dropdown to refresh |
 | Training fails | LoRA training requires an SDXL model — switch models before training |
+| Krea 2 single-file: "text encoder not found" | Internet is needed on first load to download the text encoder + VAE (~9GB). These are cached in `models/krea2/_encoders/` for offline use afterward |
+| Krea 2: "FP8-scaled checkpoints..." error | FP8-scaled checkpoints (e.g. `_fp8_scaled` variants) use a quantization format incompatible with diffusers. Use a bf16 or non-scaled fp8 checkpoint instead |
+| Krea 2: "INT8-quantised checkpoints..." error | INT8 checkpoints use a quantization format incompatible with diffusers. Use a bf16 or fp8 checkpoint instead |
 | First run download fails | Internet is needed only once; delete `models/` and retry if interrupted |
 
 ## License

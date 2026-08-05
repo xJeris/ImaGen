@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Description
 
-ImaGen is a fully self-contained, offline-capable AI image and video generation application. It provides text-to-image, image-to-image, inpainting, text-to-video, and image animation through a Gradio web UI. It does not access the internet or external sources after initial model download.
+ImaGen is a fully self-contained, offline-capable AI image and video generation application. It provides text-to-image, image-to-image, inpainting, text-to-video, and image animation through a Gradio web UI. Supports SDXL / SD 1.5, Pony, Illustrious, Flux, and Krea 2 image architectures, plus WAN 2.1 and CogVideoX for video. It does not access the internet or external sources after initial model download.
 
 ## End User Needs
 
@@ -45,6 +45,8 @@ The application is ~5,000 lines of Python organized as follows:
 
 ### Generation Pipelines
 - **pipeline.py** — `ImageGenerator` class. Loads SDXL or SD 1.5 models via HuggingFace Diffusers. Handles txt2img, img2img, inpainting. Uses Compel for weighted prompt parsing. Supports hot-swap model loading with VRAM cleanup.
+- **flux_pipeline.py** — `FluxGenerator` class for Flux architecture models. Uses NF4 quantization for the transformer and lazy text encoder loading/caching. Single-file and diffusers directory loading.
+- **krea2_pipeline.py** — `Krea2Generator` class for Krea 2 architecture (12.9B DiT). Uses `Krea2Pipeline` with sequential CPU offload. Supports both diffusers directory and single-file `.safetensors` loading (single-file requires downloading text encoder + VAE on first use, cached in `models/krea2/_encoders/`). Single-file loading auto-detects and converts ComfyUI key names to diffusers format, handles bf16/fp16/fp8 dtype casting, and keeps norm layers in fp32 for numerical stability. FP8-scaled checkpoints (e.g. Comfy-Org `fp8_scaled`) and INT8 checkpoints are rejected with a clear error — they require ComfyUI-specific inference kernels. Krea 2 Turbo: 8 steps, guidance_scale=0.0, no negative prompts, no Compel prompt weighting. bfloat16 throughout.
 - **video_pipeline.py** — `VideoGenerator` class for WAN 2.1 models (1.3B lite, 14B full with 4-bit quantization). Single-pass diffusion for temporal coherence.
 - **cogvideox_pipeline.py** — `CogVideoXGenerator` class for CogVideoX models (2b, 5b). Two-phase generation: diffusion in fp16 with sequential CPU offload, then manual VAE decode in float32 on GPU with spatial tiling. Works around cuDNN conv3d hangs on Windows.
 - **video_chunker.py** — Chunked VAE decoding for video frames to stay within VRAM limits. Routes CogVideoX through single-pass pipeline path.
@@ -60,7 +62,10 @@ The application is ~5,000 lines of Python organized as follows:
 
 ### Key Directories
 - `models/` — Pre-loaded model checkpoints (SDXL, SD 1.5, WAN, CogVideoX, AnimateDiff)
+- `models/krea2/` — Krea 2 architecture models (diffusers dirs or `.safetensors` files)
+- `models/krea2/_encoders/` — Auto-cached Krea 2 text encoder + VAE (for single-file loading)
 - `loras/` — LoRA adapter files (auto-created)
+- `loras/krea2/` — Krea 2 LoRA adapter files
 - `models/vaes/` — Custom VAE files (.safetensors or diffusers directories, auto-created)
 - `upscalers/` — Upscaler model files (auto-created)
 - `outputs/` — Generated images and videos (auto-created, JSON sidecar files for history)
@@ -69,10 +74,10 @@ The application is ~5,000 lines of Python organized as follows:
 ## Key Technical Details
 
 - **GPU Memory Management**: Models are offloaded/unloaded between pipelines. VAE tiling enabled for large images. 4-bit quantization (bitsandbytes) for 14B video model. CogVideoX uses sequential CPU offload for diffusion and manual float32 VAE decode with tiling to avoid cuDNN conv3d hangs on Windows.
-- **Model Formats**: Supports both diffusers-format directories and single-file safetensors/ckpt checkpoints.
+- **Model Formats**: Supports both diffusers-format directories and single-file safetensors/ckpt checkpoints. Krea 2 single-file loading auto-converts ComfyUI-format key names (e.g. `blocks.N.attn.wq.weight` → `transformer_blocks.N.attn.to_q.weight`) and handles dtype conversion (bf16, fp16, fp8-no-scale). FP8-scaled (Comfy-Org `_fp8_scaled`) and INT8 checkpoints are not supported — they require ComfyUI's native FP8 inference path (`torch._scaled_mm`).
 - **Prompt Weighting**: Uses `[token:weight]` syntax parsed by `prompt_parser.py`, then processed by Compel for attention scaling.
 - **Hires Fix**: Two-pass generation — first at lower resolution, then img2img upscale pass at target resolution.
-- **VAE Selection**: Custom VAEs can be placed in `models/vaes/`. The VAE dropdown appears in both T2I and I2I tabs (cross-tab synced). When a model is loaded, any previously selected custom VAE is re-applied automatically. VAE selection is disabled for Flux (different VAE architecture).
+- **VAE Selection**: Custom VAEs can be placed in `models/vaes/`. The VAE dropdown appears in both T2I and I2I tabs (cross-tab synced). When a model is loaded, any previously selected custom VAE is re-applied automatically. VAE selection is disabled for Flux and Krea 2 (different VAE architectures).
 - **Batch Generation**: T2I supports batch sizes 1–8 via `num_images_per_prompt`. Batch results display in the output gallery as a grid. Click an image to select it for "Save as PNG"; "Save All" button appears for batch runs. Hires fix and upscaler are applied to each image in the batch.
 - **Generation History**: Opt-in via "Save with history" checkbox next to Save button. When enabled, `_save_image_impl()` writes a JSON sidecar (`img_*.json`) and embeds params in PNG `tEXt` chunks under the `ImaGen:params` key.
 - **Model Browser Details**: When a tile is selected, the info panel shows trigger words, recommended settings (CFG, steps, sampler, clip skip), and links to both CivitAI and HuggingFace search. When a LoRA is downloaded, a JSON metadata sidecar is saved alongside it containing trigger words and settings.
@@ -93,7 +98,10 @@ The application is ~5,000 lines of Python organized as follows:
 The Text-to-Image and Image-to-Image tabs share state (same model, same LoRAs, same architecture). Any `.change()` handler that references components from *both* tabs must be wired **after** all tabs are built (in the post-tabs section at the bottom of `build_ui()`), not inline within a tab. Inline wiring will fail because the other tab's components don't exist yet. See the `model_dropdown.change` and `i2i_model_dropdown.change` calls near the architecture switching block for the correct pattern.
 
 ### Multi-tab sync requirements
-When a function updates shared state (model loading, architecture switching, VAE switching), it must return updates for **both** tabs' UI components. `switch_model` returns 7 values (3 for the calling tab + 4 to sync the other tab's status, model dropdown, and LoRA dropdowns). `switch_architecture` returns 13 values covering both tabs (statuses, model dropdowns, LoRA dropdowns, default settings, and the other tab's arch dropdown sync). `switch_vae` returns 3 values (status for calling tab, status for other tab, other tab's VAE dropdown). Keep this in sync if adding new shared UI elements.
+When a function updates shared state (model loading, architecture switching, VAE switching), it must return updates for **both** tabs' UI components. `switch_model` returns 8 values (4 for the calling tab + 4 to sync the other tab's status, model dropdown, and LoRA dropdowns). `switch_architecture` returns 13 values covering both tabs (statuses, model dropdowns, LoRA dropdowns, default settings, and the other tab's arch dropdown sync). `switch_vae` returns 3 values (status for calling tab, status for other tab, other tab's VAE dropdown). Keep this in sync if adding new shared UI elements.
+
+### Encoder download confirmation (single-file models)
+When a user selects a single-file Krea 2 or Flux checkpoint that requires downloading text encoder / VAE components, `switch_model` shows a warning and resets the dropdown to the previously loaded model. This reset fires the `.change()` handler again — the handler detects `_pending_download_model` is set and returns `no_change` for all outputs, preserving the warning. The user re-selects the model to confirm download. If `_pending_download_model` is not guarded correctly on the re-fire path, the warning will flash and disappear.
 
 ### CivitAI browser pagination
 CivitAI uses cursor-based (forward-only) pagination. A `browse_cursor_history` state (list of cursors, one per page) enables backward navigation by re-fetching with a previous cursor. `history[0]` is always `None` (page 1). The Next handler appends; the Previous handler pops.
@@ -109,4 +117,4 @@ CivitAI uses cursor-based (forward-only) pagination. A `browse_cursor_history` s
 Custom CSS is applied via the `css=` parameter on `app.launch()`. Do not also inject it via `gr.HTML("<style>...")` inside `build_ui()` — that causes duplicate application.
 
 ### Pipeline interface contract
-All generator classes (ImageGenerator, FluxGenerator, PonyGenerator, IllustriousGenerator, VideoGenerator, CogVideoXGenerator, AnimateDiffGenerator) must implement: `load_model()`, `unload_model()`, `get_available_models()`, `get_available_loras()`, `load_loras()`, `unload_loras()`, `interrupt()`, `was_interrupted` (property). Image generators also need `generate()`, `img2img()`, `inpaint()`, `flush_vram()`, `get_available_vaes()`, `load_vae()`.
+All generator classes (ImageGenerator, FluxGenerator, Krea2Generator, PonyGenerator, IllustriousGenerator, VideoGenerator, CogVideoXGenerator, AnimateDiffGenerator) must implement: `load_model()`, `unload_model()`, `get_available_models()`, `get_available_loras()`, `load_loras()`, `unload_loras()`, `interrupt()`, `was_interrupted` (property). Image generators also need `generate()`, `img2img()`, `inpaint()`, `flush_vram()`, `get_available_vaes()`, `load_vae()`. Krea2Generator raises `gr.Error` for `img2img()` and `inpaint()` (not yet supported).

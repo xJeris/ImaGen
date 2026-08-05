@@ -56,13 +56,17 @@ LEARNING_RATE = 1e-4
 TRAIN_BATCH_SIZE = 1
 
 # ── Multi-architecture support ──
-ARCHITECTURES = ["SDXL / SD 1.5", "Pony", "Illustrious", "Flux"]
+ARCHITECTURES = ["SDXL / SD 1.5", "Pony", "Illustrious", "Flux", "Krea 2"]
+
+# Architectures that support img2img / inpainting (shown in I2I tab dropdown)
+I2I_ARCHITECTURES = [a for a in ARCHITECTURES if a != "Krea 2"]
 
 ARCH_MODEL_DIRS = {
     "SDXL / SD 1.5": MODEL_CACHE_DIR,
     "Pony": MODEL_CACHE_DIR / "pony",
     "Illustrious": MODEL_CACHE_DIR / "illustrious",
     "Flux": MODEL_CACHE_DIR / "flux",
+    "Krea 2": MODEL_CACHE_DIR / "krea2",
 }
 
 ARCH_LORA_DIRS = {
@@ -70,6 +74,7 @@ ARCH_LORA_DIRS = {
     "Pony": LORA_DIR / "pony",
     "Illustrious": LORA_DIR / "illustrious",
     "Flux": LORA_DIR / "flux",
+    "Krea 2": LORA_DIR / "krea2",
 }
 
 ARCH_DEFAULTS = {
@@ -99,6 +104,13 @@ ARCH_DEFAULTS = {
         "guidance_scale": 3.5,
         "width": 512,
         "height": 512,
+        "scheduler": "Euler",
+    },
+    "Krea 2": {
+        "steps": 8,
+        "guidance_scale": 0.0,
+        "width": 1024,
+        "height": 1024,
         "scheduler": "Euler",
     },
 }

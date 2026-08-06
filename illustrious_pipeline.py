@@ -1,11 +1,10 @@
 """Illustrious / NoobAI pipeline — SDXL-based architecture for anime/illustration.
 
-Implements the same interface as ImageGenerator in pipeline.py so app.py
+Implements the same interface as ImageGenerator in pipeline.py so server.py
 can swap between architectures transparently.
 """
 
 import gc
-import json
 import warnings
 
 import torch

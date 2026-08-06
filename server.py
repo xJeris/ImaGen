@@ -1,7 +1,7 @@
 """
 ImaGen — FastAPI backend server.
 
-Replaces the Gradio UI (app.py) with a REST API + WebSocket progress.
+FastAPI REST API + WebSocket progress backend.
 All generation pipelines (pipeline.py, flux_pipeline.py, etc.) are unchanged.
 """
 

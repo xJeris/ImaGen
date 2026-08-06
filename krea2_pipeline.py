@@ -12,7 +12,7 @@ Supports two loading modes:
 Negative prompts and Compel prompt weighting ([token:weight]) are NOT
 supported — they will be silently ignored.
 
-Implements the same interface as ImageGenerator in pipeline.py so app.py
+Implements the same interface as ImageGenerator in pipeline.py so server.py
 can swap between architectures transparently.
 """
 

@@ -1,11 +1,10 @@
 """Pony Diffusion pipeline — SDXL-based architecture with tag-style prompting.
 
-Implements the same interface as ImageGenerator in pipeline.py so app.py
+Implements the same interface as ImageGenerator in pipeline.py so server.py
 can swap between architectures transparently.
 """
 
 import gc
-import json
 import warnings
 
 import torch

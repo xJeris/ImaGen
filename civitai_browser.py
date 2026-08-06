@@ -4,7 +4,6 @@
 # This is the ONLY module in ImaGen that makes network requests.
 # ============================================================
 
-import os
 from pathlib import Path
 
 import requests

@@ -4,12 +4,11 @@ Flux uses a flow-matching transformer instead of a UNet, T5 + CLIP text
 encoders, and does NOT support negative prompts or Compel prompt weighting.
 The [token:weight] syntax will be silently ignored.
 
-Implements the same interface as ImageGenerator in pipeline.py so app.py
+Implements the same interface as ImageGenerator in pipeline.py so server.py
 can swap between architectures transparently.
 """
 
 import gc
-import json
 import warnings
 
 import torch

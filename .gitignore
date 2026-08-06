@@ -36,8 +36,9 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# Claude Code local settings
+# Claude Code
 .claude/
+CLAUDE.md
 
 # User prompt defaults
 default_positive.txt

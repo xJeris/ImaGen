@@ -711,7 +711,7 @@ body {
   align-items: flex-end;
 }
 
-.seed-row .form-group { flex: 1; }
+.seed-row .form-group { flex: 1; margin-bottom: 0; }
 
 .seed-row .btn-dice {
   width: 28px;

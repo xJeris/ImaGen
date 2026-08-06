@@ -627,8 +627,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnProfileDelete = $('#btn-profile-delete');
   if (btnProfileDelete) btnProfileDelete.addEventListener('click', () => deleteSelectedProfile());
 
-  // Load profile list on startup
-  loadProfiles();
+  // Load profile list on startup and auto-fill default prompts
+  loadProfiles(true);
 });
 
 // ── Mode switching (top nav) ────────────────────────────────
@@ -2345,20 +2345,37 @@ function updateTrainingProgress(pct, text) {
 // PROMPT PROFILES
 // ══════════════════════════════════════════════════════════════
 
-async function loadProfiles() {
+async function loadProfiles(autoLoadDefault = false) {
   try {
     const data = await API.getProfiles();
     const sel = $('#profile-select');
     if (!sel) return;
     const current = sel.value;
     sel.innerHTML = '<option value="">Select profile...</option>';
-    (data.profiles || []).forEach(name => {
+    const profiles = data.profiles || [];
+    profiles.forEach(name => {
       const opt = document.createElement('option');
       opt.value = name;
       opt.textContent = name;
       sel.appendChild(opt);
     });
     if (current) sel.value = current;
+
+    // Auto-load default profile into all prompt fields on startup
+    if (autoLoadDefault && profiles.includes('default')) {
+      const defaults = await API.loadProfile('default');
+      const pos = defaults.positive || '';
+      const neg = defaults.negative || '';
+      // Fill all prompt textareas (t2i, i2i, inpaint)
+      ['#positive-prompt', '#i2i-positive-prompt', '#inp-positive-prompt'].forEach(id => {
+        const el = $(id);
+        if (el && !el.value) el.value = pos;
+      });
+      ['#negative-prompt', '#i2i-negative-prompt', '#inp-negative-prompt'].forEach(id => {
+        const el = $(id);
+        if (el && !el.value) el.value = neg;
+      });
+    }
   } catch (e) {
     // Not critical
   }

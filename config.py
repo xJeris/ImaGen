@@ -15,6 +15,7 @@ MODEL_CACHE_DIR = PROJECT_ROOT / "models"
 LORA_DIR = PROJECT_ROOT / "loras"
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 UPSCALER_DIR = PROJECT_ROOT / "upscalers"
+PROFILES_DIR = PROJECT_ROOT / "profiles"
 VAE_DIR = PROJECT_ROOT / "models" / "vaes"
 ANIMATEDIFF_DIR = PROJECT_ROOT / "models" / "animatediff"
 
@@ -62,7 +63,7 @@ ARCHITECTURES = ["SDXL / SD 1.5", "Pony", "Illustrious", "Flux", "Krea 2"]
 I2I_ARCHITECTURES = [a for a in ARCHITECTURES if a != "Krea 2"]
 
 ARCH_MODEL_DIRS = {
-    "SDXL / SD 1.5": MODEL_CACHE_DIR,
+    "SDXL / SD 1.5": MODEL_CACHE_DIR / "sdxl",
     "Pony": MODEL_CACHE_DIR / "pony",
     "Illustrious": MODEL_CACHE_DIR / "illustrious",
     "Flux": MODEL_CACHE_DIR / "flux",
@@ -70,7 +71,7 @@ ARCH_MODEL_DIRS = {
 }
 
 ARCH_LORA_DIRS = {
-    "SDXL / SD 1.5": LORA_DIR,
+    "SDXL / SD 1.5": LORA_DIR / "sdxl",
     "Pony": LORA_DIR / "pony",
     "Illustrious": LORA_DIR / "illustrious",
     "Flux": LORA_DIR / "flux",
@@ -122,12 +123,12 @@ COGVIDEOX_LORA_DIR = LORA_DIR / "cogvideox"
 VIDEO_ARCHITECTURES = ["WAN", "CogVideoX"]
 
 VIDEO_ARCH_MODEL_DIRS = {
-    "WAN": MODEL_CACHE_DIR,
+    "WAN": MODEL_CACHE_DIR / "wan",
     "CogVideoX": COGVIDEOX_DIR,
 }
 
 VIDEO_ARCH_LORA_DIRS = {
-    "WAN": LORA_DIR,
+    "WAN": LORA_DIR / "wan",
     "CogVideoX": COGVIDEOX_LORA_DIR,
 }
 
@@ -155,5 +156,5 @@ VIDEO_ARCH_DEFAULTS = {
 # Auto-create architecture subdirectories
 for _d in (list(ARCH_MODEL_DIRS.values()) + list(ARCH_LORA_DIRS.values())
            + list(VIDEO_ARCH_MODEL_DIRS.values()) + list(VIDEO_ARCH_LORA_DIRS.values())
-           + [VAE_DIR]):
+           + [VAE_DIR, PROFILES_DIR]):
     _d.mkdir(parents=True, exist_ok=True)

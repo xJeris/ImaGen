@@ -3,7 +3,7 @@ cd /d "%~dp0"
 echo Running from: %cd%
 echo Loading...
 call venv\Scripts\activate
-python app.py
+python server.py
 set EC=%errorlevel%
 if %EC% equ 0 exit
 if %EC% equ 42 exit

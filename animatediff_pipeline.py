@@ -116,12 +116,12 @@ class AnimateDiffGenerator:
                 models.append(item.name)
                 seen.add(item.name)
 
-        # 2. Main models folder (skip animatediff subfolder itself)
-        for item in config.MODEL_CACHE_DIR.iterdir():
-            if item.name == "animatediff":
-                continue
-            if item.is_dir() and item.name not in seen and self._is_sd15_model(item):
-                models.append(item.name)
+        # 2. SDXL/SD1.5 models folder
+        sdxl_dir = config.ARCH_MODEL_DIRS["SDXL / SD 1.5"]
+        if sdxl_dir.exists():
+            for item in sdxl_dir.iterdir():
+                if item.is_dir() and item.name not in seen and self._is_sd15_model(item):
+                    models.append(item.name)
 
         return sorted(models)
 
@@ -211,10 +211,10 @@ class AnimateDiffGenerator:
 
         ad_dir = config.ANIMATEDIFF_DIR
 
-        # Resolve base model: check animatediff folder first, then main models
+        # Resolve base model: check animatediff folder first, then SDXL/SD1.5 models
         base_path = ad_dir / base_model_name
         if not base_path.exists():
-            base_path = config.MODEL_CACHE_DIR / base_model_name
+            base_path = config.ARCH_MODEL_DIRS["SDXL / SD 1.5"] / base_model_name
         if not base_path.exists():
             raise FileNotFoundError(f"Base model not found: {base_model_name}")
 
@@ -312,9 +312,10 @@ class AnimateDiffGenerator:
 
     def get_available_loras(self):
         """List compatible LoRA files for the loaded model."""
-        config.LORA_DIR.mkdir(parents=True, exist_ok=True)
+        lora_dir = config.ARCH_LORA_DIRS["SDXL / SD 1.5"]
+        lora_dir.mkdir(parents=True, exist_ok=True)
         loras = []
-        for f in config.LORA_DIR.iterdir():
+        for f in lora_dir.iterdir():
             if f.suffix == ".safetensors":
                 if self._check_lora_compatible(str(f)):
                     loras.append(f.name)

@@ -70,10 +70,11 @@ class ImageGenerator:
         self._vae_name = None  # None = use model's bundled VAE
 
     def get_available_models(self):
-        """List models in models/ — both diffusers folders and single checkpoint files."""
-        config.MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        """List models in models/sdxl/ — both diffusers folders and single checkpoint files."""
+        model_dir = config.ARCH_MODEL_DIRS["SDXL / SD 1.5"]
+        model_dir.mkdir(parents=True, exist_ok=True)
         models = []
-        for item in config.MODEL_CACHE_DIR.iterdir():
+        for item in model_dir.iterdir():
             if item.is_dir() and (item / "model_index.json").exists():
                 models.append(item.name)
             elif item.is_file() and item.suffix in (".safetensors", ".ckpt"):
@@ -144,7 +145,7 @@ class ImageGenerator:
             progress_callback(f"VAE loaded: {vae_name}")
 
     def load_model(self, model_name=None, progress_callback=None):
-        """Load a model by name from models/ directory.
+        """Load a model by name from models/sdxl/ directory.
 
         If model_name is None, downloads the default SDXL model on first run
         or loads the first available model.
@@ -152,24 +153,25 @@ class ImageGenerator:
         if self.pipe is not None:
             self.unload_model()
 
+        model_dir = config.ARCH_MODEL_DIRS["SDXL / SD 1.5"]
         local_path = None
 
         if model_name:
-            local_path = config.MODEL_CACHE_DIR / model_name
+            local_path = model_dir / model_name
             if not local_path.exists():
                 raise FileNotFoundError(f"Model not found: {local_path}")
             self._is_single_file = local_path.is_file()
         else:
             self._is_single_file = False
             # First run or no model specified — try default, then download
-            default_path = config.MODEL_CACHE_DIR / config.DEFAULT_MODEL_NAME
+            default_path = model_dir / config.DEFAULT_MODEL_NAME
             if default_path.exists():
                 local_path = default_path
             else:
                 # Download default model
                 if progress_callback:
                     progress_callback("Downloading model (first run, ~6.5GB)...")
-                config.MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                model_dir.mkdir(parents=True, exist_ok=True)
                 pipe = StableDiffusionXLPipeline.from_pretrained(
                     config.DEFAULT_MODEL_ID,
                     torch_dtype=config.DTYPE,
@@ -677,10 +679,11 @@ class ImageGenerator:
         return image
 
     def get_available_loras(self):
-        """List compatible LoRA files available in the loras/ directory."""
-        config.LORA_DIR.mkdir(parents=True, exist_ok=True)
+        """List compatible LoRA files available in the loras/sdxl/ directory."""
+        lora_dir = config.ARCH_LORA_DIRS["SDXL / SD 1.5"]
+        lora_dir.mkdir(parents=True, exist_ok=True)
         loras = []
-        for f in config.LORA_DIR.iterdir():
+        for f in lora_dir.iterdir():
             if f.suffix == ".safetensors":
                 if self._check_lora_compatible(str(f)):
                     loras.append(f.name)

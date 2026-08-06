@@ -126,10 +126,11 @@ class VideoGenerator:
         self._active_loras = []
 
     def get_available_video_models(self):
-        """List WAN video models in models/ directory."""
-        config.MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        """List WAN video models in models/wan/ directory."""
+        model_dir = config.VIDEO_ARCH_MODEL_DIRS["WAN"]
+        model_dir.mkdir(parents=True, exist_ok=True)
         models = []
-        for item in config.MODEL_CACHE_DIR.iterdir():
+        for item in model_dir.iterdir():
             if item.is_dir() and _is_wan_model(item):
                 models.append(item.name)
         return sorted(models)
@@ -149,7 +150,7 @@ class VideoGenerator:
         if self.pipe is not None:
             self.unload_model()
 
-        local_path = config.MODEL_CACHE_DIR / model_name
+        local_path = config.VIDEO_ARCH_MODEL_DIRS["WAN"] / model_name
         is_lite = "1.3B" in model_name
 
         if progress_callback:
@@ -263,9 +264,10 @@ class VideoGenerator:
 
     def get_available_loras(self):
         """List compatible LoRA files for the loaded video model."""
-        config.LORA_DIR.mkdir(parents=True, exist_ok=True)
+        lora_dir = config.VIDEO_ARCH_LORA_DIRS["WAN"]
+        lora_dir.mkdir(parents=True, exist_ok=True)
         loras = []
-        for f in config.LORA_DIR.iterdir():
+        for f in lora_dir.iterdir():
             if f.suffix == ".safetensors":
                 if self._check_lora_compatible(str(f)):
                     loras.append(f.name)

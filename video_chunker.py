@@ -84,6 +84,8 @@ def _decode_wan_chunked(video_generator, latents, vae, vae_batch_frames,
 
     # Latent shape: [batch, channels, temporal_frames, height, width]
     num_latent_frames = latents.shape[2]
+    print(f"[video_chunker] WAN latent shape: {latents.shape}, "
+          f"num_latent_frames={num_latent_frames}")
     all_frames = []
     num_batches = (num_latent_frames + vae_batch_frames - 1) // vae_batch_frames
 
@@ -119,6 +121,8 @@ def _decode_wan_chunked(video_generator, latents, vae, vae_batch_frames,
             torch.cuda.empty_cache()
 
     gc.collect()
+    print(f"[video_chunker] WAN decoded {len(all_frames)} PIL frames from "
+          f"{num_latent_frames} latent temporal frames")
     return all_frames
 
 

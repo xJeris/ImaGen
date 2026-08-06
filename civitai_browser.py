@@ -87,7 +87,16 @@ def search_models(query="", model_type="All", sort="Most Downloaded", limit=20,
         versions = item.get("modelVersions", [])
         first_version = versions[0] if versions else {}
         images = first_version.get("images", [])
-        preview_url = images[0]["url"] if images else None
+        raw_preview = images[0]["url"] if images else None
+        # Request a width-limited static image to avoid animated/video previews.
+        # CivitAI CDN URLs end with /original — replace with /width=450 for a
+        # static JPEG rendition that works reliably in <img> tags.
+        if raw_preview and "/original" in raw_preview:
+            preview_url = raw_preview.replace("/original", "/width=450")
+        elif raw_preview:
+            preview_url = raw_preview
+        else:
+            preview_url = None
         files = first_version.get("files", [])
         primary_file = files[0] if files else {}
 
@@ -176,11 +185,13 @@ def get_download_dir(model_type, base_model=""):
     if model_type == "LORA":
         if arch:
             return config.ARCH_LORA_DIRS[arch]
-        return config.LORA_DIR
+        # Default to SDXL/SD1.5 lora dir for unknown architectures
+        return config.ARCH_LORA_DIRS["SDXL / SD 1.5"]
     # Checkpoints and everything else
     if arch:
         return config.ARCH_MODEL_DIRS[arch]
-    return config.MODEL_CACHE_DIR
+    # Default to SDXL/SD1.5 model dir for unknown architectures
+    return config.ARCH_MODEL_DIRS["SDXL / SD 1.5"]
 
 
 def download_model(download_url, dest_dir, filename, api_key=None, progress_callback=None):

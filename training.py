@@ -51,6 +51,15 @@ class LoRATrainer:
         self.pipe = pipeline.pipe
         self.device = config.DEVICE
         self.dtype = config.DTYPE
+        self._interrupted = False
+
+    def interrupt(self):
+        """Request training to stop after the current step."""
+        self._interrupted = True
+
+    @property
+    def was_interrupted(self):
+        return self._interrupted
 
     def train(
         self,
@@ -65,6 +74,8 @@ class LoRATrainer:
 
         Returns the path to the saved LoRA file.
         """
+        self._interrupted = False
+
         if self.pipe is None:
             raise ValueError("No model loaded. Please load a model before training.")
         if not hasattr(self.pipe, 'text_encoder_2'):
@@ -121,8 +132,10 @@ class LoRATrainer:
         step = 0
         log_lines = []
         while step < steps:
+            if self._interrupted:
+                break
             for images, captions in dataloader:
-                if step >= steps:
+                if step >= steps or self._interrupted:
                     break
 
                 images = images.to(self.device, dtype=self.dtype)
@@ -198,9 +211,10 @@ class LoRATrainer:
                         progress_callback("\n".join(log_lines))
 
         # Save LoRA weights as a single .safetensors file
-        config.LORA_DIR.mkdir(parents=True, exist_ok=True)
+        lora_dir = config.ARCH_LORA_DIRS["SDXL / SD 1.5"]
+        lora_dir.mkdir(parents=True, exist_ok=True)
         save_name = output_name if output_name.endswith(".safetensors") else f"{output_name}.safetensors"
-        save_path = config.LORA_DIR / save_name
+        save_path = lora_dir / save_name
         from peft.utils import get_peft_model_state_dict
         from safetensors.torch import save_file
         lora_state = get_peft_model_state_dict(unet)
@@ -211,7 +225,10 @@ class LoRATrainer:
         self.pipe.unet.requires_grad_(False)
         self.pipe.unet.eval()
 
-        final_msg = f"Training complete. LoRA saved to {save_path}"
+        if self._interrupted:
+            final_msg = f"Training interrupted at step {step}/{steps}. Partial LoRA saved to {save_path}"
+        else:
+            final_msg = f"Training complete. LoRA saved to {save_path}"
         log_lines.append(final_msg)
         if progress_callback:
             progress_callback("\n".join(log_lines))

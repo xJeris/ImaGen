@@ -594,10 +594,8 @@ class FluxGenerator:
 
         Note: negative_prompt is ignored for Flux.
         """
-        import gradio as gr
-
         if self.img2img_pipe is None:
-            raise gr.Error(
+            raise RuntimeError(
                 "Flux img2img is not available. Your version of diffusers "
                 "may not include FluxImg2ImgPipeline."
             )
@@ -680,5 +678,4 @@ class FluxGenerator:
         scheduler_name: str = "Euler",
     ):
         """Inpainting is not currently supported for Flux models."""
-        import gradio as gr
-        raise gr.Error("Inpainting is not currently supported for Flux models.")
+        raise RuntimeError("Inpainting is not currently supported for Flux models.")

@@ -240,13 +240,13 @@ def _load_single_file_transformer(checkpoint_path, progress_callback=None):
     has_scales = len(scale_keys) > 0
 
     if has_int8:
-        raise gr.Error(
+        raise RuntimeError(
             "INT8-quantised checkpoints are not supported by the diffusers "
             "pipeline. Use a bf16 or fp8 checkpoint instead."
         )
 
     if has_fp8 and has_scales:
-        raise gr.Error(
+        raise RuntimeError(
             "FP8-scaled checkpoints (e.g. Comfy-Org fp8_scaled) are designed "
             "for ComfyUI's native FP8 inference and cannot be accurately "
             "dequantised for diffusers. Use a bf16 checkpoint or a "
@@ -649,8 +649,7 @@ class Krea2Generator:
         use_cached_embeds: bool = False,
     ):
         """Image-to-image is not currently supported for Krea 2 models."""
-        import gradio as gr
-        raise gr.Error("Image-to-image is not currently supported for Krea 2 models.")
+        raise RuntimeError("Image-to-image is not currently supported for Krea 2 models.")
 
     # ── Inpainting ───────────────────────────────────────────────────
 
@@ -667,5 +666,4 @@ class Krea2Generator:
         scheduler_name: str = "Euler",
     ):
         """Inpainting is not currently supported for Krea 2 models."""
-        import gradio as gr
-        raise gr.Error("Inpainting is not currently supported for Krea 2 models.")
+        raise RuntimeError("Inpainting is not currently supported for Krea 2 models.")

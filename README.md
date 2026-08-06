@@ -2,7 +2,7 @@
 
 **Offline text-to-image, image-to-image & text-to-video generation.**
 
-A fully self-contained AI image and video generator that runs entirely on your local machine — no internet connection required after initial setup. Built with Stable Diffusion (SDXL / SD 1.5), Pony, Illustrious, Flux, and Krea 2 for images, and WAN 2.1 + CogVideoX for video, wrapped in a clean Gradio web UI.
+A fully self-contained AI image and video generator that runs entirely on your local machine — no internet connection required after initial setup. Built with Stable Diffusion (SDXL / SD 1.5), Pony, Illustrious, Flux, and Krea 2 for images, and WAN 2.1 + CogVideoX for video, with a custom FastAPI backend and vanilla HTML/CSS/JS frontend.
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-CUDA-green)
@@ -74,14 +74,14 @@ pip install -r requirements.txt
 
 ```bash
 source venv/Scripts/activate
-python app.py
+python server.py
 ```
 
 Or double-click **`start.bat`** on Windows.
 
 On first launch, the default SDXL model (~6.5GB) downloads from HuggingFace. This only happens once — all future runs are fully offline.
 
-Once loaded, open **http://127.0.0.1:7860** in your browser.
+The browser opens automatically to **http://127.0.0.1:7860**.
 
 ## Usage
 
@@ -114,7 +114,7 @@ Weights above 1.0 increase emphasis, below 1.0 decrease it.
 
 #### Inpainting
 
-Enable the **Enable Inpainting** checkbox to switch to inpainting mode. This replaces the image upload with a canvas editor where you can paint a white mask over the area you want to regenerate. Only the masked area is changed — the rest of the image stays intact.
+Select the **Inpainting** sub-tab in the bottom nav bar. Upload a source image, then paint a white mask over the area you want to regenerate using the brush tools. Only the masked area is changed — the rest of the image stays intact.
 
 ### Animate Image
 
@@ -139,11 +139,13 @@ Videos are exported as MP4. WAN uses single-pass diffusion with chunked VAE deco
 
 The **Preview Files** tab lets you browse all saved images and videos in the `outputs/` folder:
 
-1. Click on any thumbnail to preview it below the gallery
+1. Click on any thumbnail to view it in the detail panel
 2. Use the **Filter** dropdown to show only images or videos
 3. Use the **Sort** dropdown to order by date or name
-4. To delete files, check **Select for Delete** — a checklist appears with all filenames
-5. Check the files you want to remove and click **Delete Selected**
+4. Use **Select All** / **Deselect All** for batch operations
+5. Check individual files and click **Delete Selected** to remove them
+6. Click **Open** to view the full file in a new browser tab
+7. Click **Refresh** to reload the gallery
 
 ### Model Browser
 
@@ -174,23 +176,31 @@ Enable it under the **Hires Fix** accordion in the Text to Image tab.
 
 Save and reuse prompt combinations across sessions:
 
-1. Click the **Save** (💾) or **Load** (📂) icon on any tab to open the profiles panel
-2. **Save** — enter a name (letters and numbers, max 30 characters) and click Save to store the current positive and negative prompts
-3. **Load** — select a profile from the dropdown and click Load to apply it to all tabs
+1. Expand the **Prompt Profiles** accordion in the Text to Image sidebar
+2. **Save** — click Save, enter a name (letters and numbers, max 30 characters), and confirm
+3. **Load** — select a profile from the dropdown and click Load to fill the current tab's prompt fields
 4. **Delete** — remove a saved profile (the "default" profile clears its contents instead of being removed)
 
 Profiles are stored as text files in the `profiles/` folder. You can also create profiles manually by placing `{name}_positive.txt` and `{name}_negative.txt` files there.
 
 ### Training LoRA
 
-1. Prepare a folder of training images (optionally with `.txt` caption files)
-2. Go to the **Train LoRA** tab
-3. Set the image directory, LoRA name, and training parameters
-4. Click **Start Training**
+1. Load an SDXL model first (LoRA training requires SDXL)
+2. Prepare a folder of training images (optionally with `.txt` caption files — without a caption file, the filename is used as the caption)
+3. Go to the **LoRA Training** tab
+4. Set the image folder path, output name, and training parameters (steps, learning rate, LoRA rank)
+5. Click **Start Training** — progress and loss are shown in real time
+6. Click **Stop** to interrupt training early (partial LoRA is still saved)
 
-The trained LoRA is saved to `loras/` and immediately available in the LoRA dropdown.
+The trained LoRA is saved to `loras/sdxl/` and immediately available in the LoRA dropdown.
 
-> LoRA training currently requires an SDXL model to be loaded.
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Enter` | Start generation (current tab) |
+| `Ctrl+S` | Save current output |
+| `Escape` | Close lightbox or stop generation |
 
 ## Adding Models
 
@@ -198,7 +208,7 @@ The trained LoRA is saved to `loras/` and immediately available in the LoRA drop
 
 1. Download a model in diffusers format (from HuggingFace, CivitAI, etc.) or as a single `.safetensors` checkpoint
 2. Place it in the appropriate folder based on architecture:
-   - **SDXL / SD 1.5** → `models/`
+   - **SDXL / SD 1.5** → `models/sdxl/`
    - **Pony** → `models/pony/`
    - **Illustrious** → `models/illustrious/`
    - **Flux** → `models/flux/`
@@ -214,7 +224,7 @@ LoRA files follow the same pattern (`loras/`, `loras/pony/`, `loras/illustrious/
 
 ### Video Models
 
-**WAN 2.1** — Download in diffusers format and place in `models/`.
+**WAN 2.1** — Download in diffusers format and place in `models/wan/`.
 
 | Model | VRAM | Speed | Quality |
 |-------|------|-------|---------|
@@ -249,16 +259,21 @@ The VAE persists across model swaps. Set to "Default" to use the model's bundled
 
 ```
 ImaGen/
-├── app.py                  # Gradio web UI
+├── server.py               # FastAPI backend (REST API + WebSocket)
+├── static/                 # Frontend
+│   ├── index.html          # Main HTML page
+│   ├── css/style.css       # Stylesheet (dark theme)
+│   └── js/
+│       ├── api.js          # API client + WebSocket
+│       └── app.js          # UI logic (tabs, forms, generation)
 ├── pipeline.py             # Image generation pipeline (txt2img, img2img, inpainting)
 ├── flux_pipeline.py        # Flux image generation pipeline
 ├── krea2_pipeline.py       # Krea 2 image generation pipeline (12.9B DiT, Turbo/Raw)
 ├── video_pipeline.py       # Video generation pipeline (WAN 2.1)
-├── cogvideox_pipeline.py    # CogVideoX video pipeline (2b/5b, fp16 diffusion + fp32 VAE decode)
-├── video_chunker.py        # VRAM-safe video generation (single-pass diffusion + chunked VAE decode)
+├── cogvideox_pipeline.py   # CogVideoX video pipeline (fp16 diffusion + fp32 VAE decode)
+├── video_chunker.py        # VRAM-safe video generation (chunked VAE decode)
 ├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
 ├── civitai_browser.py      # CivitAI model search and download
-├── preview_files.py        # Preview Files tab backend (gallery, thumbnails, delete)
 ├── upscaler.py             # AI upscaler inference (Spandrel)
 ├── prompt_parser.py        # Weighted prompt syntax parser
 ├── training.py             # LoRA fine-tuning (SDXL)
@@ -268,29 +283,32 @@ ImaGen/
 ├── default_positive.txt    # Default positive prompt
 ├── default_negative.txt    # Default negative prompt
 ├── profiles/               # Saved prompt profiles
-├── models/                 # Base models (SDXL / SD 1.5 + video)
-│   ├── cogvideox/          # CogVideoX video models
-│   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
+├── models/                 # Base models (per-architecture subdirectories)
+│   ├── sdxl/               # SDXL / SD 1.5 checkpoints
 │   ├── pony/               # Pony architecture models
 │   ├── illustrious/        # Illustrious architecture models
 │   ├── flux/               # Flux architecture models
 │   ├── krea2/              # Krea 2 architecture models
 │   │   └── _encoders/      # Auto-cached text encoder + VAE (single-file loading)
+│   ├── wan/                # WAN 2.1 video models
+│   ├── cogvideox/          # CogVideoX video models
+│   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
 │   └── vaes/               # Custom VAE files (.safetensors or diffusers dirs)
 ├── upscalers/              # Upscaler model files
-├── loras/                  # LoRA adapter files (SDXL / SD 1.5)
+├── loras/                  # LoRA adapter files (per-architecture subdirectories)
+│   ├── sdxl/               # SDXL / SD 1.5 LoRAs (+ JSON metadata sidecars)
 │   ├── pony/               # Pony LoRAs
 │   ├── illustrious/        # Illustrious LoRAs
 │   ├── flux/               # Flux LoRAs
 │   └── krea2/              # Krea 2 LoRAs
-└── outputs/                # Saved images and videos
+└── outputs/                # Saved images and videos (+ JSON sidecar files)
 ```
 
 ## Tech Stack
 
+- **[FastAPI](https://fastapi.tiangolo.com/)** — Backend REST API + WebSocket server
 - **[Diffusers](https://github.com/huggingface/diffusers)** — Stable Diffusion & WAN 2.1 pipelines
 - **[PyTorch](https://pytorch.org/)** — Deep learning framework with CUDA acceleration
-- **[Gradio](https://gradio.app/)** — Web UI
 - **[Compel](https://github.com/damian0815/compel)** — Prompt weighting and embedding
 - **[Spandrel](https://github.com/chaiNNer-org/spandrel)** — Universal upscaler model loader
 - **[PEFT](https://github.com/huggingface/peft)** — LoRA training and loading
@@ -304,8 +322,8 @@ ImaGen/
 | Out of memory (images) | Reduce resolution (768x768 or 512x512), reduce batch size, reduce steps, close other GPU apps |
 | Out of memory (video) | Use the 1.3B Lite model; 14B uses 4-bit quantization + chunked VAE decode automatically |
 | CogVideoX black/red frames | This is handled automatically — the pipeline decodes in float32 to avoid fp16 precision loss |
-| Model not in dropdown | Ensure it's in `models/` with a `model_index.json`; click dropdown to refresh |
-| Training fails | LoRA training requires an SDXL model — switch models before training |
+| Model not in dropdown | Ensure it's in the correct architecture subfolder under `models/`; click the dropdown to refresh |
+| Training fails | LoRA training requires an SDXL model — switch to SDXL / SD 1.5 architecture and load a model before training |
 | Krea 2 single-file: "text encoder not found" | Internet is needed on first load to download the text encoder + VAE (~9GB). These are cached in `models/krea2/_encoders/` for offline use afterward |
 | Krea 2: "FP8-scaled checkpoints..." error | FP8-scaled checkpoints (e.g. `_fp8_scaled` variants) use a quantization format incompatible with diffusers. Use a bf16 or non-scaled fp8 checkpoint instead |
 | Krea 2: "INT8-quantised checkpoints..." error | INT8 checkpoints use a quantization format incompatible with diffusers. Use a bf16 or fp8 checkpoint instead |

@@ -25,18 +25,30 @@ pip install -r requirements.txt
 
 ```bash
 source venv/Scripts/activate
-python app.py
+python server.py
 ```
 
-On first launch the SDXL model (~6.5GB) will download from HuggingFace. This only happens once — the model is saved locally to `models/` and all future runs are fully offline.
+Or double-click **`start.bat`** on Windows.
 
-Once loaded, the UI opens at **http://127.0.0.1:7860** in your browser.
+On first launch the SDXL model (~6.5GB) will download from HuggingFace. This only happens once — the model is saved locally to `models/sdxl/` and all future runs are fully offline.
+
+The browser opens automatically to **http://127.0.0.1:7860**.
+
+## UI Layout
+
+ImaGen uses a 5-tab layout with a top nav bar, bottom sub-nav bar, center canvas area, and right sidebar:
+
+- **Top Nav** — Image Generator, Video Generator, Model Browser, Preview Files, LoRA Training
+- **Bottom Nav** — Sub-tabs for the current mode (e.g. Text to Image / Image to Image / Inpainting)
+- **Canvas** — Center area showing generated images, video player, model browser grid, or file gallery
+- **Sidebar** — Right panel with settings, controls, and generation parameters
+- **Status Bar** — Bottom bar showing current model, seed, and VRAM usage
 
 ## Switching Models
 
 ### Architecture Selector
 
-The **Architecture** dropdown at the top of the page lets you switch between supported model families:
+The **Architecture** dropdown in the sidebar lets you switch between supported model families:
 
 | Architecture | Default Resolution | Default Steps | Default CFG |
 |-------------|-------------------|---------------|-------------|
@@ -44,29 +56,31 @@ The **Architecture** dropdown at the top of the page lets you switch between sup
 | Pony | 1024×1024 | 25 | 3.0 |
 | Illustrious | 1024×1024 | 28 | 5.0 |
 | Flux | 512×512 | 20 | 3.5 |
+| Krea 2 | 1024×1024 | 8 | 0.0 |
 
 Switching architecture unloads the current model and updates the model/LoRA dropdowns to show only models in that architecture's folder. Default generation parameters are updated automatically.
 
-A **Prompting Guide** below the Generate button updates when you switch architectures, showing the correct prompting style for each (tag-based vs natural language, score tags for Pony, etc.).
+A **Prompting Guide** accordion in the sidebar updates when you switch architectures, showing the correct prompting style for each (tag-based vs natural language, score tags for Pony, etc.).
 
 ### Base Model Dropdown
 
-The **Base Model** dropdown lists all image models in the current architecture's folder. Selecting a different model hot-swaps it (unloads the old one, loads the new one) — no restart needed.
+The **Checkpoint** dropdown lists all image models in the current architecture's folder. Selecting a different model hot-swaps it (unloads the old one, loads the new one) — no restart needed.
 
 > **Note:** Only one pipeline (image or video) is loaded at a time. Switching to a video model automatically unloads the image model to free VRAM, and vice versa.
 
 ### Adding New Models
 
-1. Download a diffusers-format model (from HuggingFace, CivitAI, etc.)
-2. Place the model folder in the appropriate directory:
-   - **SDXL / SD 1.5** → `models/`
+1. Download a diffusers-format model (from HuggingFace, CivitAI, etc.) or a single `.safetensors` checkpoint
+2. Place it in the appropriate directory:
+   - **SDXL / SD 1.5** → `models/sdxl/`
    - **Pony** → `models/pony/`
    - **Illustrious** → `models/illustrious/`
    - **Flux** → `models/flux/`
+   - **Krea 2** → `models/krea2/`
 3. Select the matching architecture from the **Architecture** dropdown
-4. Click the **Base Model** dropdown to refresh — the model appears automatically
+4. Click the **Checkpoint** dropdown to refresh — the model appears automatically
 
-LoRA files follow the same pattern (`loras/`, `loras/pony/`, `loras/illustrious/`, `loras/flux/`).
+LoRA files follow the same pattern (`loras/sdxl/`, `loras/pony/`, `loras/illustrious/`, `loras/flux/`, `loras/krea2/`).
 
 > **Note:** SD 1.5 models generate at 512x512 natively. SDXL models generate at 1024x1024. Adjust the width/height sliders to match.
 
@@ -79,15 +93,15 @@ You can also search and download models directly from CivitAI using the **Model 
 3. Click a tile to select it — the info panel shows file details, **trigger words**, **recommended settings** (CFG, steps, sampler, clip skip), and links to both **CivitAI** and **HuggingFace** (for alternative downloads)
 4. Click **Download** — the file is saved to the appropriate folder for the selected architecture (e.g. `models/pony/` or `loras/flux/`), and the model dropdowns refresh automatically
 
-When a LoRA is downloaded, a `.json` metadata sidecar is saved alongside it. This allows the trigger words to display automatically when you select the LoRA in the Text to Image tab.
+When a LoRA is downloaded, a `.json` metadata sidecar is saved alongside it. This allows the trigger words to display automatically when you select the LoRA in the generation tabs.
 
-Some restricted models require a CivitAI API key. Expand the **API Key** section at the bottom of the browser tab to enter and save your key. The key is stored in `~/.imagen/civitai_key.txt` (outside the project folder).
+Some restricted models require a CivitAI API key. Expand the **API Key** section at the bottom of the browser sidebar to enter and save your key. The key is stored in `~/.imagen/civitai_key.txt` (outside the project folder).
 
 > **Note:** The Model Browser is the only feature in ImaGen that requires an internet connection. All other functionality works fully offline.
 
 ### Model Compatibility
 
-ImaGen supports **SD 1.5**, **SDXL**, **Pony**, **Illustrious**, and **Flux** architectures for image generation, and **WAN** for video generation.
+ImaGen supports **SD 1.5**, **SDXL**, **Pony**, **Illustrious**, **Flux**, and **Krea 2** architectures for image generation, and **WAN** + **CogVideoX** for video generation.
 
 **Supported — Image Generation (Text to Image / Image to Image / Inpainting):**
 
@@ -107,6 +121,7 @@ ImaGen supports **SD 1.5**, **SDXL**, **Pony**, **Illustrious**, and **Flux** ar
 | Illustrious / NoobAI | Illustrious | Place in `models/illustrious/` |
 | Flux .1 D / .1 S / .1 Krea / .1 Kontext | Flux | Place in `models/flux/`. No negative prompts or weighted syntax. |
 | Flux .2 D / .2 Klein variants | Flux | Place in `models/flux/` |
+| Krea 2 | Krea 2 | Place in `models/krea2/`. No negative prompts. |
 
 **Supported — Video Generation:**
 
@@ -116,11 +131,7 @@ ImaGen supports **SD 1.5**, **SDXL**, **Pony**, **Illustrious**, and **Flux** ar
 | Wan Video 14B t2v | Full model, uses 4-bit quantization |
 | Wan Video 14B i2v 480p | Image-to-video |
 | Wan Video 14B i2v 720p | Image-to-video, higher resolution |
-| Wan Video 2.2 T2I-5B | May work if diffusers supports it |
-| Wan Video 2.2 I2V-A14B | May work if diffusers supports it |
-| Wan Video 2.2 T2V-A14B | May work if diffusers supports it |
-| Wan Video 2.5 T2V | May work if diffusers supports it |
-| Wan Video 2.5 I2V | May work if diffusers supports it |
+| CogVideoX-2b | ~5GB VRAM, 720x480 |
 
 **Not Supported (different architecture):**
 
@@ -134,16 +145,13 @@ ImaGen supports **SD 1.5**, **SDXL**, **Pony**, **Illustrious**, and **Flux** ar
 | Kolors | Different text encoder | Requires KolorsPipeline |
 | Lumina | DiT (transformer) | Different architecture |
 | Mochi | DiT (transformer) | Different architecture |
-| Qwen | Unknown | Different architecture |
 | LTXV / LTXV2 | Transformer-based video | Different architecture |
-| CogVideoX | Transformer-based video | Different architecture |
-| Anima | Unknown | Different architecture |
 
 > **Tip:** If a model is a fine-tune of a supported architecture (e.g. downloaded from CivitAI with those base types), it will work — just place it in the correct architecture folder. The key is the underlying architecture, not the model name.
 
 ## Upscalers
 
-The **Upscaler** dropdown at the top of the page lets you apply AI upscaling after generation. This is a simple post-process enlargement — see **Hires Fix** below for a more advanced two-pass approach.
+The **Upscaler** dropdown in the sidebar lets you apply AI upscaling after generation. This is a simple post-process enlargement — see **Hires Fix** below for a more advanced two-pass approach.
 
 ### Adding Upscalers
 
@@ -165,10 +173,9 @@ Set the upscaler to "None" to disable upscaling.
 
 1. **Positive Prompt** — describe what you want in the image
 2. **Negative Prompt** — describe what you want to avoid (e.g. `blurry, low quality, deformed, watermark`)
-3. **Description** — optional extra scene details, appended to the positive prompt
-4. Click **Generate** and wait a few seconds
+3. Click **Generate** and wait a few seconds
 
-After generation, the **seed** used is displayed below the image. Copy it into the Seed field to reproduce the same image.
+After generation, the **seed** used is displayed in the status bar. Copy it into the Seed field to reproduce the same image.
 
 #### Weighted Prompts
 
@@ -191,13 +198,13 @@ Expand the **Advanced Settings** accordion to adjust:
 - **Sampler** — the diffusion scheduler algorithm. Options include Euler, DPM++ 2M, UniPC, and others.
 - **Width / Height** (default 1024x1024) — output resolution in multiples of 64.
 - **Seed** — set a specific seed to reproduce an image. -1 = random.
-- **Batch Size** (1–8, default 1) — generate multiple variations at once. Results appear in the output gallery as a grid. Click any image to select it for saving; a **Save All** button appears to save the entire batch.
+- **Batch Size** (1–8, default 1) — generate multiple variations at once. Results appear as a grid in the canvas. Click any image to view it in the lightbox. Use the checkboxes to select which images to save.
 
 #### LoRA
 
 Expand the **LoRA** accordion to apply up to two LoRAs simultaneously:
 
-- **LoRA 1 / LoRA 2** — pick from `.safetensors` files in the `loras/` folder. Set either to "None" to leave that slot unused.
+- **LoRA 1 / LoRA 2** — pick from `.safetensors` files in the architecture's `loras/` folder. Set either to "None" to leave that slot unused.
 - **LoRA 1 Weight / LoRA 2 Weight** (0.0–1.5) — how strongly each LoRA style is applied
 - **Trigger Words** — if the LoRA has a metadata sidecar (auto-created when downloaded from the Model Browser), its trigger words are displayed below the dropdown. Include these words in your prompt to activate the LoRA's trained effect.
 
@@ -221,18 +228,20 @@ Settings:
 
 ### Custom VAE
 
-The **VAE** dropdown (next to the Upscaler dropdown) lets you swap the model's VAE with a custom one:
+The **VAE** dropdown in the sidebar lets you swap the model's VAE with a custom one:
 
 1. Download a VAE `.safetensors` file or a diffusers-format VAE directory
 2. Place it in `models/vaes/`
 3. Select it from the **VAE** dropdown — it takes effect immediately
 4. Set to "Default" to revert to the model's bundled VAE
 
-The selected VAE persists across model switches. Flux does not support custom VAE swapping (it uses a different VAE architecture).
+The selected VAE persists across model switches. Flux and Krea 2 do not support custom VAE swapping (they use different VAE architectures).
 
 ### Saving Images
 
-Click **Save as PNG** to save the current image to the `outputs/` folder with a timestamped filename.
+Click **Save PNG** to save the current image to the `outputs/` folder with a timestamped filename.
+
+For batch generations, use the checkboxes on each image in the grid to select which ones to save. The save button text updates to show how many are selected (e.g. "Save 3 PNGs").
 
 #### Generation History
 
@@ -245,19 +254,19 @@ This is off by default. When off, images are saved as plain PNGs with no metadat
 
 ## Prompt Profiles
 
-Prompt profiles let you save and reuse positive/negative prompt combinations across all tabs.
+Prompt profiles let you save and reuse positive/negative prompt combinations across sessions.
 
 ### Saving a Profile
 
-1. Click the **💾 Save** icon on any tab — the profiles panel opens
-2. Enter a profile name (letters and numbers only, max 30 characters)
-3. Click **Save** — the current tab's positive and negative prompts are saved to the `profiles/` folder
+1. Expand the **Prompt Profiles** accordion in the sidebar
+2. Click **Save** — a text input appears
+3. Enter a profile name (letters and numbers only, max 30 characters)
+4. Click **OK** — the current tab's positive and negative prompts are saved to the `profiles/` folder
 
 ### Loading a Profile
 
-1. Click the **📂 Load** icon on any tab
-2. Select a profile from the dropdown
-3. Click **Load** — the prompts are applied to all 4 tabs at once
+1. Select a profile from the dropdown in the **Prompt Profiles** accordion
+2. Click **Load** — the prompts are applied to the current tab's prompt fields
 
 ### Deleting a Profile
 
@@ -269,9 +278,9 @@ You can create profiles by hand — place `{name}_positive.txt` and `{name}_nega
 
 ## Image to Image
 
-The **Image to Image** tab lets you upload an existing image and modify it using text prompts.
+Select the **Image to Image** sub-tab in the bottom nav bar.
 
-1. Upload a source image
+1. Upload a source image (click or drag-and-drop)
 2. Describe the changes you want in the **Positive Prompt** (e.g. "make it a watercolor painting" or "add snow to the scene")
 3. Use the **Negative Prompt** for things to avoid
 4. Adjust **Strength** to control how much the image changes:
@@ -287,16 +296,16 @@ The output resolution matches the source image dimensions. Dual LoRA and post-pr
 
 ### Inpainting
 
-Inpainting lets you selectively regenerate part of an image while keeping the rest untouched.
+Select the **Inpainting** sub-tab in the bottom nav bar.
 
-1. Check the **Enable Inpainting** checkbox — the source image upload switches to a canvas editor
-2. Upload your image into the editor
-3. Use the brush tool to **paint white** over the area you want to regenerate (e.g. clothing, a face, an object)
+1. Upload your image into the canvas editor
+2. Use the **brush tool** to paint white over the area you want to regenerate (e.g. clothing, a face, an object)
+3. Use the **eraser** to correct mistakes in your mask
 4. Enter a prompt describing what should replace the masked area (e.g. "red leather jacket" or "blue sky with clouds")
 5. Adjust **Strength** — lower keeps the masked area closer to the original, higher gives the model more freedom
 6. Click **Generate**
 
-Only the white-painted area is regenerated. Use the eraser tool to correct mistakes in your mask.
+Only the white-painted area is regenerated. Use **Clear** to reset the mask, or **Undo** to step back.
 
 Common uses:
 - Changing clothing or accessories on a person
@@ -306,7 +315,7 @@ Common uses:
 
 ## Animate Image
 
-The **Animate Image** tab uses AnimateDiff + SparseCtrl to turn a still image into a short animation. This requires SD 1.5 components.
+Select the **Animate Image** sub-tab under the Video Generator tab. This uses AnimateDiff + SparseCtrl to turn a still image into a short animation using SD 1.5 components.
 
 ### Required Models
 
@@ -329,20 +338,21 @@ You need three components in the `models/animatediff/` folder:
    - **VRAM / Duration Estimate** — shows frame count, duration, and VRAM usage in real-time
 5. Click **Animate**
 
-Source images are automatically resized to 512x512 (the native resolution for SD 1.5). Output is saved as MP4. Dual LoRA support is available for SD 1.5-compatible LoRAs. Like WAN video, AnimateDiff uses single-pass diffusion with chunked VAE decode for VRAM safety.
+Source images are automatically resized to 512x512 (the native resolution for SD 1.5). Output is saved as MP4.
 
 ## Text to Video
 
-The **Text to Video** tab generates short video clips using WAN 2.1 models.
+Select the **Text to Video** sub-tab under the Video Generator tab.
 
 ### Video Models
 
-Video models are separate from image models. Two sizes are supported:
+Video models are separate from image models. Place them in `models/wan/` (WAN) or `models/cogvideox/` (CogVideoX).
 
 | Model | VRAM | Speed | Quality |
 |-------|------|-------|---------|
 | WAN 2.1 1.3B (Lite) | ~5GB | 1–2 minutes | Good for simple scenes |
 | WAN 2.1 14B (Full) | ~7GB (4-bit quantized) | Slower (minutes) | Higher quality |
+| CogVideoX-2b | ~5GB | ~2.5s/step | 720x480 |
 
 The 14B model is automatically loaded with 4-bit NF4 quantization and CPU offloading to fit within 24GB VRAM.
 
@@ -356,14 +366,6 @@ Video generation uses a single-pass diffusion + chunked VAE decode approach:
 
 This allows generating 5-second videos at 30fps (149 frames) on a 24GB GPU with 2 LoRAs loaded.
 
-### Adding Video Models
-
-1. Download a WAN 2.1 model in diffusers format
-2. Place the model folder in `models/` — it must contain a `model_index.json` with a WAN pipeline class
-3. Click the Video Model dropdown to refresh — WAN models appear automatically
-
-> **Note:** Video and image models share the `models/` folder but are listed in separate dropdowns. The app auto-detects which are WAN video models.
-
 ### Video Settings
 
 - **Duration** (1–5 seconds) — default 24fps (e.g. 3s at 24fps = 73 frames)
@@ -372,16 +374,16 @@ This allows generating 5-second videos at 30fps (149 frames) on a 24GB GPU with 
 - **Guidance Scale** (default 5.0) — prompt adherence
 - **Sampler** — UniPC (default), Euler, or DPM++ 2M
 - **Seed** — set a specific seed to reproduce a video. -1 = random.
-- **LoRA 1 / LoRA 2** — up to two video-compatible LoRAs from the `loras/` folder, with independent weights
+- **LoRA 1 / LoRA 2** — up to two video-compatible LoRAs from the `loras/wan/` folder, with independent weights
 - **VRAM Estimate** — shown in real-time as you adjust duration and FPS, with available/total VRAM comparison
 
-> **Note:** WAN requires frame counts matching `4k + 1` (5, 9, 13, ..., 149). The app automatically rounds your duration × FPS to the nearest valid count.
+> **Note:** WAN requires frame counts matching `4k + 1` (5, 9, 13, ..., 149). The app automatically rounds your duration x FPS to the nearest valid count.
 
 > **Note:** Weighted prompts (`[word:weight]`) are not supported for video generation — WAN uses a different text encoder (UMT5) that doesn't support prompt weighting.
 
 ### Saving Videos
 
-Click **Save Video** to save the current video as MP4 to the `outputs/` folder.
+Click **Save MP4** to save the current video to the `outputs/` folder.
 
 ## Preview Files
 
@@ -389,19 +391,20 @@ The **Preview Files** tab lets you browse, preview, and manage all files in the 
 
 ### Browsing
 
-- The gallery auto-populates when you open the tab — no need to click Refresh manually
-- Click any thumbnail to preview the full image or video below the gallery
+- The gallery auto-populates when you open the tab
+- Click any thumbnail to view it in the detail panel on the right
 - Use **Filter** to show only Images or Videos
 - Use **Sort** to order by Newest First, Oldest First, or Name A-Z
-- Video thumbnails are generated from the first frame and cached in `outputs/.thumbs/`
+- Click **Refresh** to reload the gallery
+- Click **Open** to view the selected file in a new browser tab
+- Video files show first-frame thumbnails (cached in `outputs/.thumbs/`)
 
 ### Deleting Files
 
-1. Check the **Select for Delete** checkbox — a checklist of all filenames appears
-2. Check the files you want to remove
-3. The **Delete Selected** button updates to show the count
-4. Click **Delete Selected** to permanently remove the checked files
-5. Select mode turns off automatically after deletion
+1. Use **Select All** to check all files, or check individual files
+2. The **Delete Selected (N)** button shows the count of checked files
+3. Click **Delete Selected** to permanently remove the checked files
+4. Use **Deselect All** to clear all checkboxes
 
 ## Training a LoRA
 
@@ -420,20 +423,22 @@ LoRA (Low-Rank Adaptation) lets you fine-tune the model on your own images to le
    ├── photo2.jpg
    └── photo2.txt    ← "an oil painting of a landscape with mountains"
    ```
-   If no `.txt` file exists, the filename is used as the caption.
+   If no `.txt` file exists, the filename is used as the caption (underscores and hyphens are replaced with spaces).
 
 ### Running Training
 
-1. Go to the **Train LoRA** tab
-2. Enter the path to your training images folder
-3. Give your LoRA a name (e.g. `oil-painting-style`)
-4. Adjust settings if needed:
-   - **Training Steps** (default 500) — more steps = better learning but risk of overfitting. 300–1000 for most cases.
-   - **Learning Rate** (default 0.0001) — lower = more stable training
+1. Switch to **SDXL / SD 1.5** architecture and load an SDXL model
+2. Go to the **LoRA Training** tab
+3. Enter the path to your training images folder
+4. Give your LoRA a name (e.g. `oil-painting-style`)
+5. Adjust settings if needed:
+   - **Steps** (default 500) — more steps = better learning but risk of overfitting. 300–1000 for most cases.
+   - **Learning Rate** (default 1e-4) — lower = more stable training. The slider uses log scale (1e-5 to 1e-3).
    - **LoRA Rank** (default 4) — higher rank = more capacity but larger file. 4–16 is typical.
-5. Click **Start Training** and monitor the log for loss values
+6. Click **Start Training** — progress bar and loss values update in real time via WebSocket
+7. Click **Stop** to interrupt training early — the partial LoRA is still saved
 
-Training saves a `.safetensors` file to the `loras/` folder. Decreasing loss values indicate the model is learning.
+Training saves a `.safetensors` file to the `loras/sdxl/` folder. Decreasing loss values indicate the model is learning.
 
 ### Using a Trained LoRA
 
@@ -442,39 +447,61 @@ Training saves a `.safetensors` file to the `loras/` folder. Decreasing loss val
 3. Adjust each LoRA's weight (0.0–1.5) to control how strongly the style is applied
 4. Generate as normal
 
-LoRAs are available on all tabs — the app automatically filters to show only LoRAs compatible with the currently loaded model. Both LoRA slots refresh their lists when you switch models.
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Enter` | Start generation (current tab) |
+| `Ctrl+S` | Save current output (prevents browser save dialog) |
+| `Escape` | Close lightbox or stop generation |
 
 ## Project Structure
 
 ```
 ImaGen/
-├── app.py                  # UI entry point (Gradio)
-├── pipeline.py             # Image model loading and inference (txt2img, img2img, inpainting)
-├── video_pipeline.py       # Video model loading and inference (WAN 2.1)
-├── video_chunker.py        # VRAM-safe video generation (single-pass diffusion + chunked VAE decode)
+├── server.py               # FastAPI backend (REST API + WebSocket)
+├── static/                 # Frontend
+│   ├── index.html          # Main HTML page
+│   ├── css/style.css       # Stylesheet (dark theme)
+│   └── js/
+│       ├── api.js          # API client + WebSocket
+│       └── app.js          # UI logic (tabs, forms, generation)
+├── pipeline.py             # Image generation pipeline (txt2img, img2img, inpainting)
+├── flux_pipeline.py        # Flux image generation pipeline
+├── krea2_pipeline.py       # Krea 2 image generation pipeline (12.9B DiT, Turbo/Raw)
+├── video_pipeline.py       # Video generation pipeline (WAN 2.1)
+├── cogvideox_pipeline.py   # CogVideoX video pipeline (fp16 diffusion + fp32 VAE decode)
+├── video_chunker.py        # VRAM-safe video generation (chunked VAE decode)
 ├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
 ├── civitai_browser.py      # CivitAI model search and download
-├── preview_files.py        # Preview Files tab backend (gallery, thumbnails, delete)
-├── upscaler.py             # Upscaler loading and inference (spandrel)
-├── prompt_parser.py        # Weighted prompt syntax
-├── training.py             # LoRA training (SDXL only)
+├── upscaler.py             # AI upscaler inference (Spandrel)
+├── prompt_parser.py        # Weighted prompt syntax parser
+├── training.py             # LoRA fine-tuning (SDXL)
 ├── config.py               # Settings and defaults
 ├── requirements.txt        # Python dependencies
+├── start.bat               # Windows launcher
 ├── default_positive.txt    # Default positive prompt
 ├── default_negative.txt    # Default negative prompt
 ├── profiles/               # Saved prompt profiles (auto-created)
-├── models/                 # Base models — SDXL / SD 1.5 + video (auto-created)
-│   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
+├── models/                 # Base models (per-architecture subdirectories, auto-created)
+│   ├── sdxl/               # SDXL / SD 1.5 checkpoints
 │   ├── pony/               # Pony architecture models
 │   ├── illustrious/        # Illustrious architecture models
 │   ├── flux/               # Flux architecture models
-│   └── vaes/               # Custom VAE files (auto-created)
-├── upscalers/              # Upscaler .pth files (auto-created)
-├── loras/                  # LoRA .safetensors files — SDXL / SD 1.5 (auto-created)
+│   ├── krea2/              # Krea 2 architecture models
+│   │   └── _encoders/      # Auto-cached text encoder + VAE (single-file loading)
+│   ├── wan/                # WAN 2.1 video models
+│   ├── cogvideox/          # CogVideoX video models
+│   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
+│   └── vaes/               # Custom VAE files (.safetensors or diffusers dirs)
+├── upscalers/              # Upscaler model files (auto-created)
+├── loras/                  # LoRA adapter files (per-architecture subdirectories, auto-created)
+│   ├── sdxl/               # SDXL / SD 1.5 LoRAs (+ JSON metadata sidecars)
 │   ├── pony/               # Pony LoRAs
 │   ├── illustrious/        # Illustrious LoRAs
-│   └── flux/               # Flux LoRAs
-└── outputs/                # Saved images and videos (auto-created)
+│   ├── flux/               # Flux LoRAs
+│   └── krea2/              # Krea 2 LoRAs
+└── outputs/                # Saved images and videos (+ JSON sidecar files)
 ```
 
 ## Troubleshooting
@@ -491,13 +518,13 @@ ImaGen/
 
 **Out of memory errors (video)**
 - The 14B model uses 4-bit quantization + CPU offloading automatically
-- VAE decode is chunked into small batches to reduce peak VRAM — adjust `vae_batch_frames` if needed
+- VAE decode is chunked into small batches to reduce peak VRAM
 - If the 14B model still OOMs, use the 1.3B Lite model instead
 - Ensure no image model is loaded when generating video (switching models unloads the other automatically)
 - Check the VRAM Estimate display before generating — it shows estimated vs available VRAM in real-time
 
 **Model not showing in dropdown**
-- Ensure the model folder is directly inside `models/` and contains a `model_index.json` file
+- Ensure the model is in the correct architecture subfolder under `models/`
 - Click the dropdown to refresh the list
 
 **Upscaler not showing in dropdown**
@@ -506,7 +533,7 @@ ImaGen/
 
 **Model download fails**
 - Ensure you have internet for the first run only
-- If interrupted, delete the `models/` folder and try again
+- If interrupted, delete the `models/sdxl/` folder and try again
 
 **Video generation hangs or is very slow**
 - Ensure `bitsandbytes` is installed (`pip install bitsandbytes>=0.43.0`)
@@ -514,4 +541,10 @@ ImaGen/
 - The 1.3B model typically takes 1–2 minutes
 
 **Training fails with "requires an SDXL model"**
-- LoRA training only works with SDXL models. Switch to an SDXL model before training.
+- LoRA training only works with SDXL models. Switch to SDXL / SD 1.5 architecture and load a model before training.
+
+**Krea 2 single-file: "text encoder not found"**
+- Internet is needed on first load to download the text encoder + VAE (~9GB). These are cached in `models/krea2/_encoders/` for offline use afterward.
+
+**Krea 2: "FP8-scaled checkpoints..." error**
+- FP8-scaled checkpoints (e.g. `_fp8_scaled` variants) use a quantization format incompatible with diffusers. Use a bf16 or non-scaled fp8 checkpoint instead.

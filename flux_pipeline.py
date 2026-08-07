@@ -245,6 +245,8 @@ class FluxGenerator:
         self._interrupt = False
         self._cached_embeds = None
         self._vae_name = None
+        self._progress_callback = None
+        self._num_steps = 0
 
     def get_available_vaes(self):
         """Flux uses its own VAE architecture; custom VAE swapping is not supported."""
@@ -443,6 +445,8 @@ class FluxGenerator:
     def _step_callback(self, pipeline, i, t, callback_kwargs):
         if self._interrupt:
             pipeline._interrupt = True
+        if self._progress_callback and self._num_steps > 0:
+            self._progress_callback(i + 1, self._num_steps)
         return callback_kwargs
 
     def load_loras(self, lora_list):
@@ -495,6 +499,7 @@ class FluxGenerator:
         Flux does not support negative prompts — it will be ignored.
         """
         self._interrupt = False
+        self._num_steps = steps
         # negative_prompt is intentionally ignored for Flux
 
         # Clear leftover VRAM from any previous generation before loading encoders
@@ -600,6 +605,7 @@ class FluxGenerator:
             )
 
         self._interrupt = False
+        self._num_steps = steps
         source_image = source_image.convert("RGB")
         self._last_width, self._last_height = source_image.size
 

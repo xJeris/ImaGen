@@ -68,6 +68,8 @@ class ImageGenerator:
         self._interrupt = False
         self._cached_embeds = None  # (pos_embeds, pos_pooled, neg_embeds, neg_pooled)
         self._vae_name = None  # None = use model's bundled VAE
+        self._progress_callback = None
+        self._num_steps = 0
 
     def get_available_models(self):
         """List models in models/sdxl/ — both diffusers folders and single checkpoint files."""
@@ -440,9 +442,11 @@ class ImageGenerator:
             self._active_loras = []
 
     def _step_callback(self, pipeline, i, t, callback_kwargs):
-        """Check interrupt flag at each diffusion step."""
+        """Check interrupt flag and report progress at each diffusion step."""
         if self._interrupt:
             pipeline._interrupt = True
+        if self._progress_callback and self._num_steps > 0:
+            self._progress_callback(i + 1, self._num_steps)
         return callback_kwargs
 
     def generate(
@@ -474,6 +478,7 @@ class ImageGenerator:
                 immediately and will offload them again anyway.
         """
         self._interrupt = False
+        self._num_steps = steps
         self.set_scheduler(scheduler_name)
 
         parsed_pos = parse_weighted_prompt(positive_prompt)
@@ -558,6 +563,7 @@ class ImageGenerator:
                 the prompt parse and text encoder forward pass entirely.
         """
         self._interrupt = False
+        self._num_steps = steps
         self.set_scheduler(scheduler_name)
 
         source_image = source_image.convert("RGB")
@@ -644,6 +650,7 @@ class ImageGenerator:
     ):
         """Inpaint masked regions of an image. Returns a PIL Image."""
         self._interrupt = False
+        self._num_steps = steps
         self.set_scheduler(scheduler_name)
 
         source_image = source_image.convert("RGB")

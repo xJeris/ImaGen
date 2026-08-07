@@ -52,6 +52,8 @@ class IllustriousGenerator:
         self._interrupt = False
         self._cached_embeds = None
         self._vae_name = None
+        self._progress_callback = None
+        self._num_steps = 0
 
     def get_available_vaes(self):
         """List VAE files in models/vaes/ directory."""
@@ -232,6 +234,8 @@ class IllustriousGenerator:
     def _step_callback(self, pipeline, i, t, callback_kwargs):
         if self._interrupt:
             pipeline._interrupt = True
+        if self._progress_callback and self._num_steps > 0:
+            self._progress_callback(i + 1, self._num_steps)
         return callback_kwargs
 
     def load_loras(self, lora_list):
@@ -307,6 +311,7 @@ class IllustriousGenerator:
         batch_size: int = 1,
     ):
         self._interrupt = False
+        self._num_steps = steps
         self.set_scheduler(scheduler_name)
 
         parsed_pos = parse_weighted_prompt(positive_prompt)
@@ -372,6 +377,7 @@ class IllustriousGenerator:
         use_cached_embeds: bool = False,
     ):
         self._interrupt = False
+        self._num_steps = steps
         self.set_scheduler(scheduler_name)
         source_image = source_image.convert("RGB")
 
@@ -441,6 +447,7 @@ class IllustriousGenerator:
         scheduler_name: str = "Euler Ancestral",
     ):
         self._interrupt = False
+        self._num_steps = steps
         self.set_scheduler(scheduler_name)
 
         source_image = source_image.convert("RGB")

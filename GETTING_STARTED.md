@@ -175,7 +175,7 @@ Set the upscaler to "None" to disable upscaling.
 2. **Negative Prompt** — describe what you want to avoid (e.g. `blurry, low quality, deformed, watermark`)
 3. Click **Generate** and wait a few seconds
 
-After generation, the **seed** used is displayed in the status bar. Copy it into the Seed field to reproduce the same image.
+During generation, a progress bar at the bottom of the canvas fills as each diffusion step completes. After generation, the **seed** used is displayed in the status bar. Copy it into the Seed field to reproduce the same image.
 
 #### Weighted Prompts
 

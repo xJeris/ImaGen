@@ -1587,6 +1587,13 @@ function handleWSMessage(data) {
     case 'training':
       updateTrainingLog(data.log);
       break;
+    case 'step_progress': {
+      const pct = Math.round(data.step / data.total * 100);
+      const fill = document.querySelector('.progress-bar-container.active .progress-bar-fill');
+      if (fill) fill.style.width = pct + '%';
+      showMessage('info', `Step ${data.step}/${data.total}`, false);
+      break;
+    }
     case 'vram_update':
       updateVRAM(data.vram);
       break;

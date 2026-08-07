@@ -32,6 +32,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 - **Generation History** — Optionally save generation parameters (prompt, seed, model, etc.) as JSON sidecar files and PNG metadata
 - **Hot-Swap Models** — Switch between models from the UI without restarting
 - **Fully Offline** — After first-run model download, everything runs locally
+- **Real-Time Progress** — Visual progress bar during image generation showing diffusion step progress via WebSocket
 - **VRAM Management** — Automatic model offloading, VAE tiling, chunked VAE decode, 4-bit quantization for large video models
 
 ## Screenshots

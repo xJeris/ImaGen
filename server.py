@@ -87,6 +87,13 @@ app.mount("/static", StaticFiles(directory=str(config.PROJECT_ROOT / "static")),
 
 # ── Global state ─────────────────────────────────────────────────────────────
 
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+@app.on_event("startup")
+def _capture_event_loop():
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
+
 generators: dict = {"SDXL / SD 1.5": ImageGenerator()}
 _active_arch: str = "SDXL / SD 1.5"
 _pending_download_model: str | None = None
@@ -103,7 +110,6 @@ upscaler_instance = Upscaler()
 _last_t2i_image: Image.Image | None = None
 _last_t2i_images: list[Image.Image] = []
 _last_t2i_params: dict = {}
-_last_batch_index: int = 0
 
 _last_i2i_image: Image.Image | None = None
 _last_i2i_params: dict = {}
@@ -196,6 +202,13 @@ def _apply_loras(gen, lora1_name, lora1_weight, lora2_name, lora2_weight):
         gen.load_loras(lora_list)
     else:
         gen.unload_loras()
+
+
+def _make_step_cb():
+    """Create a step progress callback that broadcasts via WebSocket."""
+    def cb(step, total):
+        sync_broadcast({"type": "step_progress", "step": step, "total": total})
+    return cb
 
 
 def _apply_upscaler(image: Image.Image, upscaler_name: str | None) -> Image.Image:
@@ -444,12 +457,8 @@ async def broadcast_progress(data: dict):
 
 def sync_broadcast(data: dict):
     """Broadcast from synchronous pipeline code via the event loop."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.run_coroutine_threadsafe(broadcast_progress(data), loop)
-    except RuntimeError:
-        pass
+    if _main_loop is not None and _main_loop.is_running():
+        asyncio.run_coroutine_threadsafe(broadcast_progress(data), _main_loop)
 
 
 @app.websocket("/ws/progress")
@@ -667,7 +676,7 @@ async def api_schedulers():
 
 @app.post("/api/generate")
 async def api_generate(body: dict):
-    global _last_t2i_image, _last_t2i_images, _last_t2i_params, _last_batch_index
+    global _last_t2i_image, _last_t2i_images, _last_t2i_params
 
     gen = get_generator()
     batch_size = int(body.get("batch_size", 1))
@@ -720,9 +729,11 @@ async def api_generate(body: dict):
     heavy = has_loras or hires_active
 
     sync_broadcast({"type": "status", "message": "Generating..."})
+    gen._progress_callback = _make_step_cb()
 
     try:
-        result = gen.generate(
+        result = await asyncio.to_thread(
+            gen.generate,
             positive_prompt=full_prompt,
             negative_prompt=body.get("negative_prompt", ""),
             steps=steps,
@@ -736,10 +747,13 @@ async def api_generate(body: dict):
             batch_size=batch_size,
         )
     except Exception as e:
+        gen._progress_callback = None
         gen.flush_vram()
         _broadcast_vram_update()
         sync_broadcast({"type": "error", "message": str(e)})
         return JSONResponse({"error": str(e)}, status_code=500)
+
+    gen._progress_callback = None
 
     if gen.was_interrupted:
         gen.flush_vram()
@@ -782,7 +796,8 @@ async def api_generate(body: dict):
         images = result if isinstance(result, list) else [result]
         processed = []
         for img in images:
-            img, interrupted = _postprocess_single(
+            img, interrupted = await asyncio.to_thread(
+                _postprocess_single,
                 gen, img, full_prompt, body.get("negative_prompt", ""),
                 guidance, width, height, actual_seed, sampler,
                 upscaler_name, hires_active, hires_upscaler,
@@ -796,7 +811,6 @@ async def api_generate(body: dict):
             return {"status": "interrupted", "seed": actual_seed}
 
         _last_t2i_images = processed
-        _last_batch_index = 0
         _last_t2i_image = processed[0]
 
         gen.flush_vram()
@@ -810,7 +824,8 @@ async def api_generate(body: dict):
         }
     else:
         image = result
-        image, interrupted = _postprocess_single(
+        image, interrupted = await asyncio.to_thread(
+            _postprocess_single,
             gen, image, full_prompt, body.get("negative_prompt", ""),
             guidance, width, height, actual_seed, sampler,
             upscaler_name, hires_active, hires_upscaler,
@@ -866,7 +881,9 @@ async def api_img2img(
         models = _list_models()
         if not models:
             return JSONResponse({"error": f"No models found for {_active_arch}"}, status_code=400)
-        gen.load_model(models[0])
+        def progress_cb(msg):
+            sync_broadcast({"type": "progress", "message": msg})
+        gen.load_model(models[0], progress_callback=progress_cb)
 
     try:
         full_prompt = _build_prompt(positive_prompt, description)
@@ -881,9 +898,11 @@ async def api_img2img(
     src = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
     sync_broadcast({"type": "status", "message": "Generating (img2img)..."})
+    gen._progress_callback = _make_step_cb()
 
     try:
-        image = gen.img2img(
+        image = await asyncio.to_thread(
+            gen.img2img,
             source_image=src,
             positive_prompt=full_prompt,
             negative_prompt=negative_prompt,
@@ -894,10 +913,13 @@ async def api_img2img(
             scheduler_name=scheduler,
         )
     except Exception as e:
+        gen._progress_callback = None
         gen.flush_vram()
         _broadcast_vram_update()
         sync_broadcast({"type": "error", "message": str(e)})
         return JSONResponse({"error": str(e)}, status_code=500)
+
+    gen._progress_callback = None
 
     if gen.was_interrupted:
         gen.flush_vram()
@@ -973,7 +995,9 @@ async def api_inpaint(
         models = _list_models()
         if not models:
             return JSONResponse({"error": f"No models found for {_active_arch}"}, status_code=400)
-        gen.load_model(models[0])
+        def progress_cb(msg):
+            sync_broadcast({"type": "progress", "message": msg})
+        gen.load_model(models[0], progress_callback=progress_cb)
 
     try:
         full_prompt = _build_prompt(positive_prompt, description)
@@ -990,9 +1014,11 @@ async def api_inpaint(
     mask = Image.open(io.BytesIO(mask_bytes)).convert("RGB")
 
     sync_broadcast({"type": "status", "message": "Generating (inpaint)..."})
+    gen._progress_callback = _make_step_cb()
 
     try:
-        image = gen.inpaint(
+        image = await asyncio.to_thread(
+            gen.inpaint,
             source_image=src,
             mask_image=mask,
             positive_prompt=full_prompt,
@@ -1004,10 +1030,13 @@ async def api_inpaint(
             scheduler_name=scheduler,
         )
     except Exception as e:
+        gen._progress_callback = None
         gen.flush_vram()
         _broadcast_vram_update()
         sync_broadcast({"type": "error", "message": str(e)})
         return JSONResponse({"error": str(e)}, status_code=500)
+
+    gen._progress_callback = None
 
     if gen.was_interrupted:
         gen.flush_vram()
@@ -1031,6 +1060,10 @@ async def api_inpaint(
         "model_type": getattr(gen, "_model_type", None),
         "architecture": _active_arch,
         "mode": "inpaint",
+        "lora1": lora1_name if lora1_name != "None" else None,
+        "lora1_weight": lora1_weight if lora1_name != "None" else None,
+        "lora2": lora2_name if lora2_name != "None" else None,
+        "lora2_weight": lora2_weight if lora2_name != "None" else None,
         "vae": getattr(gen, "_vae_name", None) or "Default",
     }
 

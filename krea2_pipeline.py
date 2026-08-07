@@ -330,6 +330,8 @@ class Krea2Generator:
         self._interrupt = False
         self._cached_embeds = None
         self._vae_name = None
+        self._progress_callback = None
+        self._num_steps = 0
 
     # ── Config compatibility ────────────────────────────────────────
 
@@ -545,6 +547,8 @@ class Krea2Generator:
     def _step_callback(self, pipeline, i, t, callback_kwargs):
         if self._interrupt:
             pipeline._interrupt = True
+        if self._progress_callback and self._num_steps > 0:
+            self._progress_callback(i + 1, self._num_steps)
         return callback_kwargs
 
     # ── LoRA management ──────────────────────────────────────────────
@@ -602,6 +606,7 @@ class Krea2Generator:
         unless guidance_scale > 0 (Base/Raw checkpoint).
         """
         self._interrupt = False
+        self._num_steps = steps
         self._cached_embeds = None
         self.flush_vram()
 

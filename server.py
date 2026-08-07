@@ -165,6 +165,11 @@ def _get_vram_info() -> dict:
     }
 
 
+def _broadcast_vram_update():
+    """Push current VRAM stats to all connected WebSocket clients."""
+    sync_broadcast({"type": "vram_update", "vram": _get_vram_info()})
+
+
 def _resolve_seed(seed: int) -> int:
     actual = int(seed)
     if actual < 0:
@@ -239,6 +244,9 @@ def _postprocess_single(gen, image, full_prompt, negative_prompt, guidance,
             return None, True
 
     image = _apply_upscaler(image, upscaler_name)
+    if upscaler_name and upscaler_name != "None":
+        upscaler_instance.unload()
+        _broadcast_vram_update()
     return image, False
 
 
@@ -728,10 +736,14 @@ async def api_generate(body: dict):
             batch_size=batch_size,
         )
     except Exception as e:
+        gen.flush_vram()
+        _broadcast_vram_update()
         sync_broadcast({"type": "error", "message": str(e)})
         return JSONResponse({"error": str(e)}, status_code=500)
 
     if gen.was_interrupted:
+        gen.flush_vram()
+        _broadcast_vram_update()
         sync_broadcast({"type": "status", "message": "Generation stopped."})
         return {"status": "interrupted", "seed": actual_seed}
 
@@ -787,6 +799,8 @@ async def api_generate(body: dict):
         _last_batch_index = 0
         _last_t2i_image = processed[0]
 
+        gen.flush_vram()
+        _broadcast_vram_update()
         sync_broadcast({"type": "status", "message": f"Done. Seed: {actual_seed} | Batch: {len(processed)}"})
         return {
             "status": "ok",
@@ -809,6 +823,8 @@ async def api_generate(body: dict):
         _last_t2i_image = image
         _last_t2i_images = []
 
+        gen.flush_vram()
+        _broadcast_vram_update()
         sync_broadcast({"type": "status", "message": f"Done. Seed: {actual_seed}"})
         return {
             "status": "ok",
@@ -878,15 +894,23 @@ async def api_img2img(
             scheduler_name=scheduler,
         )
     except Exception as e:
+        gen.flush_vram()
+        _broadcast_vram_update()
         sync_broadcast({"type": "error", "message": str(e)})
         return JSONResponse({"error": str(e)}, status_code=500)
 
     if gen.was_interrupted:
+        gen.flush_vram()
+        _broadcast_vram_update()
         sync_broadcast({"type": "status", "message": "Generation stopped."})
         return {"status": "interrupted", "seed": actual_seed}
 
     image = _apply_upscaler(image, upscaler)
+    if upscaler and upscaler != "None":
+        upscaler_instance.unload()
     _last_i2i_image = image
+    gen.flush_vram()
+    _broadcast_vram_update()
     _last_i2i_params = {
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
@@ -980,14 +1004,20 @@ async def api_inpaint(
             scheduler_name=scheduler,
         )
     except Exception as e:
+        gen.flush_vram()
+        _broadcast_vram_update()
         sync_broadcast({"type": "error", "message": str(e)})
         return JSONResponse({"error": str(e)}, status_code=500)
 
     if gen.was_interrupted:
+        gen.flush_vram()
+        _broadcast_vram_update()
         sync_broadcast({"type": "status", "message": "Generation stopped."})
         return {"status": "interrupted", "seed": actual_seed}
 
     _last_i2i_image = image
+    gen.flush_vram()
+    _broadcast_vram_update()
     _last_i2i_params = {
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,

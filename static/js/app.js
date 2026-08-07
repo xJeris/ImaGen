@@ -1587,6 +1587,9 @@ function handleWSMessage(data) {
     case 'training':
       updateTrainingLog(data.log);
       break;
+    case 'vram_update':
+      updateVRAM(data.vram);
+      break;
   }
 }
 

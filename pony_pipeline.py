@@ -249,9 +249,32 @@ class PonyGenerator:
             for i, (lora_path, weight) in enumerate(lora_list):
                 p = Path(lora_path)
                 name = f"lora_{i}"
-                self.pipe.load_lora_weights(
-                    str(p.parent), weight_name=p.name, adapter_name=name,
-                )
+                try:
+                    self.pipe.load_lora_weights(
+                        str(p.parent), weight_name=p.name, adapter_name=name,
+                    )
+                except (IndexError, RuntimeError):
+                    try:
+                        self.pipe.unet.delete_adapters(name)
+                    except (ValueError, AttributeError):
+                        pass
+                    from diffusers.loaders.lora_pipeline import StableDiffusionXLLoraLoaderMixin
+                    state_dict, network_alphas, metadata = StableDiffusionXLLoraLoaderMixin.lora_state_dict(
+                        str(p.parent), weight_name=p.name,
+                        unet_config=self.pipe.unet.config,
+                        return_lora_metadata=True,
+                    )
+                    unet_keys = {k: v for k, v in state_dict.items()
+                                 if not k.startswith(("text_encoder.", "text_encoder_2."))}
+                    self.pipe.load_lora_into_unet(
+                        unet_keys,
+                        network_alphas=network_alphas,
+                        unet=self.pipe.unet,
+                        adapter_name=name,
+                        metadata=metadata,
+                        _pipeline=self.pipe,
+                    )
+                    print(f"[LoRA] '{p.name}' loaded (UNet only, TE weights skipped due to format)")
                 adapter_names.append(name)
                 adapter_weights.append(weight)
 

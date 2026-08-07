@@ -273,6 +273,14 @@ const API = {
 
   // ── CivitAI Browser ──────────────────────────────────────
 
+  getCivitaiEnabled() {
+    return this.get('/api/civitai/enabled');
+  },
+
+  setCivitaiEnabled(enabled) {
+    return this.post('/api/civitai/enabled', { enabled });
+  },
+
   searchCivitai(params) {
     const qs = new URLSearchParams(params);
     return this.get(`/api/civitai/search?${qs}`);

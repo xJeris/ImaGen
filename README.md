@@ -32,6 +32,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 - **Generation History** — Optionally save generation parameters (prompt, seed, model, etc.) as JSON sidecar files and PNG metadata
 - **Hot-Swap Models** — Switch between models from the UI without restarting
 - **Fully Offline** — After first-run model download, everything runs locally
+- **Privacy & Security** — Content Security Policy headers, no analytics/telemetry/cookies, `Referrer-Policy: no-referrer`, CivitAI can be fully disabled for guaranteed zero network activity
 - **Real-Time Progress** — Visual progress bar during image generation showing diffusion step progress via WebSocket
 - **VRAM Management** — Automatic model offloading, VAE tiling, chunked VAE decode, 4-bit quantization for large video models
 
@@ -159,9 +160,9 @@ The **Model Browser** tab lets you search and download models directly from Civi
 
 When a LoRA is downloaded, a metadata sidecar (`.json`) is saved alongside it. This enables automatic trigger word display when the LoRA is selected in the Text to Image tab.
 
-Some models require a CivitAI API key — expand the **API Key** section to enter and save your key.
+Some models require a CivitAI API key — expand the **CivitAI Settings** section to enter and save your key.
 
-> **Note:** This is the only feature in ImaGen that requires an internet connection.
+> **Note:** This is the only feature in ImaGen that requires an internet connection. You can disable CivitAI entirely via the **Enable CivitAI integration** checkbox in the CivitAI Settings section — this guarantees zero network requests.
 
 ### Hires Fix
 
@@ -314,6 +315,21 @@ ImaGen/
 - **[Spandrel](https://github.com/chaiNNer-org/spandrel)** — Universal upscaler model loader
 - **[PEFT](https://github.com/huggingface/peft)** — LoRA training and loading
 - **[bitsandbytes](https://github.com/TimDettmers/bitsandbytes)** — 4-bit quantization for large models
+
+## Privacy & Security
+
+ImaGen is designed to be private by default:
+
+- **Localhost only** — The server binds to `127.0.0.1` and is not accessible from your network
+- **No analytics or telemetry** — No tracking scripts, pixels, beacons, or data collection of any kind
+- **No cookies or local storage** — No client-side state is stored in the browser
+- **No external scripts or fonts** — All assets are served locally; no CDNs, no Google Fonts
+- **Content Security Policy** — Strict CSP headers prevent the browser from loading unauthorized external resources, verifiable in DevTools
+- **Referrer-Policy: no-referrer** — Prevents referrer leaking when opening external links (CivitAI, HuggingFace)
+- **CivitAI disable toggle** — Disable CivitAI integration entirely from the Model Browser sidebar for guaranteed zero network activity
+- **All generated content stays local** — Images and videos are saved to the `outputs/` folder and never leave your machine
+
+The only network feature is the **Model Browser** (CivitAI search and download), which is optional and can be disabled.
 
 ## Troubleshooting
 

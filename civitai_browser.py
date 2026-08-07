@@ -15,6 +15,7 @@ CIVITAI_API = "https://civitai.com/api/v1"
 # API key storage — outside project folder to avoid accidental commits
 _KEY_DIR = Path.home() / ".imagen"
 _KEY_FILE = _KEY_DIR / "civitai_key.txt"
+_ENABLED_FILE = _KEY_DIR / "civitai_enabled.txt"
 
 
 def get_api_key():
@@ -28,6 +29,19 @@ def save_api_key(key):
     """Persist CivitAI API key to ~/.imagen/civitai_key.txt."""
     _KEY_DIR.mkdir(parents=True, exist_ok=True)
     _KEY_FILE.write_text(key.strip(), encoding="utf-8")
+
+
+def is_enabled():
+    """Check if CivitAI integration is enabled. Enabled by default."""
+    if _ENABLED_FILE.exists():
+        return _ENABLED_FILE.read_text(encoding="utf-8").strip().lower() == "true"
+    return True
+
+
+def set_enabled(enabled):
+    """Persist CivitAI enabled/disabled toggle."""
+    _KEY_DIR.mkdir(parents=True, exist_ok=True)
+    _ENABLED_FILE.write_text("true" if enabled else "false", encoding="utf-8")
 
 
 # Base models that ImaGen actually supports.

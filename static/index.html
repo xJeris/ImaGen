@@ -13,11 +13,11 @@
   <nav class="top-nav">
     <div class="brand">ImaGen</div>
     <div class="nav-tabs">
-      <div class="nav-tab active" data-mode="image" onclick="switchMode('image')">Image Generator</div>
-      <div class="nav-tab" data-mode="video" onclick="switchMode('video')">Video Generator</div>
-      <div class="nav-tab" data-mode="browser" onclick="switchMode('browser')">Model Browser</div>
-      <div class="nav-tab" data-mode="preview" onclick="switchMode('preview')">Preview Files</div>
-      <div class="nav-tab" data-mode="train" onclick="switchMode('train')">LoRA Training</div>
+      <div class="nav-tab active" data-mode="image">Image Generator</div>
+      <div class="nav-tab" data-mode="video">Video Generator</div>
+      <div class="nav-tab" data-mode="browser">Model Browser</div>
+      <div class="nav-tab" data-mode="preview">Preview Files</div>
+      <div class="nav-tab" data-mode="train">LoRA Training</div>
     </div>
     <div class="nav-right">
       <span class="net-badge offline" id="net-badge">Offline</span>
@@ -853,15 +853,26 @@
 
       <div class="sidebar-section" style="margin-top:auto">
         <div class="accordion-header">
-          <span class="label">API Key</span>
+          <span class="label">CivitAI Settings</span>
           <span class="arrow">&#9660;</span>
         </div>
         <div class="accordion-body">
           <div class="form-group">
-            <label class="form-label">CivitAI API Key</label>
-            <input type="password" class="form-number" id="civitai-api-key" placeholder="Enter API key..." style="width:100%">
+            <label class="form-label" style="display:flex; align-items:center; gap:8px; cursor:pointer">
+              <input type="checkbox" id="civitai-enabled" checked>
+              Enable CivitAI integration
+            </label>
+            <div style="font-size:11px; color:#888; margin-top:2px">
+              When disabled, no network requests are made. The app runs fully offline.
+            </div>
           </div>
-          <button class="btn-secondary" id="btn-save-apikey" style="margin-top:4px">Save Key</button>
+          <div id="civitai-key-group">
+            <div class="form-group" style="margin-top:8px">
+              <label class="form-label">API Key</label>
+              <input type="password" class="form-number" id="civitai-api-key" placeholder="Enter API key..." style="width:100%">
+            </div>
+            <button class="btn-secondary" id="btn-save-apikey" style="margin-top:4px">Save Key</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1080,30 +1091,30 @@
 <nav class="bottom-nav">
   <!-- Image sub-tabs -->
   <div id="bottom-image">
-    <div class="sub-tab active" data-sub="t2i" onclick="switchSubMode('t2i', this)">Text to Image</div>
-    <div class="sub-tab" data-sub="i2i" onclick="switchSubMode('i2i', this)">Image to Image</div>
-    <div class="sub-tab" data-sub="inpaint" onclick="switchSubMode('inpaint', this)">Inpainting</div>
+    <div class="sub-tab active" data-sub="t2i">Text to Image</div>
+    <div class="sub-tab" data-sub="i2i">Image to Image</div>
+    <div class="sub-tab" data-sub="inpaint">Inpainting</div>
   </div>
 
   <!-- Video sub-tabs -->
   <div id="bottom-video" class="panel-hidden">
-    <div class="sub-tab active" data-sub="t2v" onclick="switchSubMode('t2v', this)">Text to Video</div>
-    <div class="sub-tab" data-sub="animate" onclick="switchSubMode('animate', this)">Animate Image</div>
+    <div class="sub-tab active" data-sub="t2v">Text to Video</div>
+    <div class="sub-tab" data-sub="animate">Animate Image</div>
   </div>
 
   <!-- Browser sub-tabs -->
   <div id="bottom-browser" class="panel-hidden">
-    <div class="sub-tab active" data-sub="browse" onclick="switchSubMode('browse', this)">Browse Models</div>
+    <div class="sub-tab active" data-sub="browse">Browse Models</div>
   </div>
 
   <!-- Preview Files -->
   <div id="bottom-preview" class="panel-hidden">
-    <div class="sub-tab active" data-sub="preview" onclick="switchSubMode('preview', this)">Output Gallery</div>
+    <div class="sub-tab active" data-sub="preview">Output Gallery</div>
   </div>
 
   <!-- LoRA Training -->
   <div id="bottom-train" class="panel-hidden">
-    <div class="sub-tab active" data-sub="train" onclick="switchSubMode('train', this)">Train LoRA</div>
+    <div class="sub-tab active" data-sub="train">Train LoRA</div>
   </div>
 
   <div class="separator"></div>

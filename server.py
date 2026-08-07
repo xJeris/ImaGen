@@ -82,6 +82,27 @@ PROMPTING_GUIDES = {
 
 app = FastAPI(title="ImaGen", version="2.0")
 
+# ── Security headers middleware ───────────────────────────────────────────────
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "img-src 'self' data: blob: https://*.civitai.com; "
+        "media-src 'self' blob: https://*.civitai.com; "
+        "connect-src 'self' ws://127.0.0.1:*; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
+        "font-src 'self'; "
+        "frame-src 'none'; "
+        "object-src 'none'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
+
 # Mount static files
 app.mount("/static", StaticFiles(directory=str(config.PROJECT_ROOT / "static")), name="static")
 
@@ -1707,6 +1728,18 @@ async def api_animate_save():
 
 # ── CivitAI Model Browser ────────────────────────────────────────────────────
 
+@app.get("/api/civitai/enabled")
+async def api_civitai_enabled():
+    return {"enabled": civitai_browser.is_enabled()}
+
+
+@app.post("/api/civitai/enabled")
+async def api_civitai_set_enabled(body: dict):
+    enabled = body.get("enabled", True)
+    civitai_browser.set_enabled(enabled)
+    return {"status": "ok", "enabled": enabled}
+
+
 @app.get("/api/civitai/search")
 async def api_civitai_search(
     query: str = "",
@@ -1717,6 +1750,8 @@ async def api_civitai_search(
     limit: int = 20,
     cursor: str = None,
 ):
+    if not civitai_browser.is_enabled():
+        return JSONResponse({"error": "CivitAI integration is disabled"}, status_code=403)
     try:
         results, next_cursor = await asyncio.to_thread(
             civitai_browser.search_models,
@@ -1735,6 +1770,8 @@ async def api_civitai_search(
 
 @app.post("/api/civitai/download")
 async def api_civitai_download(body: dict):
+    if not civitai_browser.is_enabled():
+        return JSONResponse({"error": "CivitAI integration is disabled"}, status_code=403)
     download_url = body.get("download_url", "")
     model_type = body.get("model_type", "Checkpoint")
     base_model = body.get("base_model", "")

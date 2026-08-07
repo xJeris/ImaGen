@@ -45,6 +45,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     h.addEventListener('click', () => toggleAccordion(h));
   });
 
+  // Wire up top nav tabs (delegated)
+  $$('.top-nav .nav-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchMode(tab.dataset.mode));
+  });
+
+  // Wire up bottom sub-tabs (delegated)
+  $$('.bottom-nav .sub-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchSubMode(tab.dataset.sub, tab));
+  });
+
   // Wire up hires fix toggle
   const hiresCheck = $('#hires-check');
   if (hiresCheck) {
@@ -545,6 +555,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (keyInput && data.key) keyInput.value = data.key;
   }).catch(() => {});
 
+  // CivitAI enable/disable toggle
+  const civitaiToggle = $('#civitai-enabled');
+  if (civitaiToggle) {
+    API.getCivitaiEnabled().then(data => {
+      civitaiToggle.checked = data.enabled;
+      applyCivitaiEnabled(data.enabled);
+    }).catch(() => {});
+
+    civitaiToggle.addEventListener('change', async () => {
+      const enabled = civitaiToggle.checked;
+      try {
+        await API.setCivitaiEnabled(enabled);
+        applyCivitaiEnabled(enabled);
+        showMessage('success', enabled ? 'CivitAI enabled — network requests allowed' : 'CivitAI disabled — fully offline mode');
+      } catch (e) {
+        civitaiToggle.checked = !enabled;
+        showMessage('error', e.message);
+      }
+    });
+  }
+
   // ── Preview Files event wiring ──
   const previewFilter = $('#preview-filter-type');
   const previewSort = $('#preview-sort');
@@ -630,6 +661,48 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load profile list on startup and auto-fill default prompts
   loadProfiles(true);
 });
+
+// ── CivitAI toggle ──────────────────────────────────────────
+
+function applyCivitaiEnabled(enabled) {
+  state.civitaiEnabled = enabled;
+
+  // Dim the Model Browser tab when disabled
+  const browserTab = document.querySelector('.nav-tab[data-mode="browser"]');
+  if (browserTab) browserTab.style.opacity = enabled ? '' : '0.45';
+
+  // Show/hide the API key group in sidebar
+  const keyGroup = $('#civitai-key-group');
+  if (keyGroup) keyGroup.style.display = enabled ? '' : 'none';
+
+  // Show/hide the search and detail sidebar sections (first two sections in sidebar-browser)
+  const browserSidebar = $('#sidebar-browser');
+  if (browserSidebar) {
+    const sections = browserSidebar.querySelectorAll('.sidebar-section');
+    // Section 0 = search, Section 1 = selected model detail — hide both when disabled
+    // Section 2 = CivitAI Settings — always visible
+    for (let i = 0; i < sections.length - 1; i++) {
+      sections[i].style.display = enabled ? '' : 'none';
+    }
+  }
+
+  // Show/hide the disabled overlay on the browser canvas
+  let overlay = $('#civitai-disabled-msg');
+  const canvas = $('#canvas-browser');
+  if (!enabled) {
+    if (!overlay && canvas) {
+      overlay = document.createElement('div');
+      overlay.id = 'civitai-disabled-msg';
+      overlay.style.cssText = 'display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; color:#888; font-size:14px; text-align:center; gap:12px;';
+      overlay.innerHTML = '<div style="font-size:18px; color:#aaa">CivitAI integration is disabled</div>'
+        + '<div>No network requests will be made. Enable it in the sidebar to browse and download models.</div>';
+      canvas.prepend(overlay);
+    }
+    if (overlay) overlay.style.display = 'flex';
+  } else {
+    if (overlay) overlay.remove();
+  }
+}
 
 // ── Mode switching (top nav) ────────────────────────────────
 
@@ -1760,8 +1833,8 @@ function selectBrowserTile(card, model) {
   if (linksEl) {
     const hfQuery = encodeURIComponent(model.name);
     linksEl.innerHTML =
-      `<a href="${model.civitai_url}" target="_blank" rel="noopener">View on CivitAI</a>` +
-      `<a href="https://huggingface.co/models?search=${hfQuery}" target="_blank" rel="noopener" style="color:#f59e0b">Search on HuggingFace</a>`;
+      `<a href="${model.civitai_url}" target="_blank" rel="noopener noreferrer">View on CivitAI</a>` +
+      `<a href="https://huggingface.co/models?search=${hfQuery}" target="_blank" rel="noopener noreferrer" style="color:#f59e0b">Search on HuggingFace</a>`;
   }
 
   // Clear download progress

@@ -16,6 +16,9 @@ from safetensors import safe_open
 
 import config
 
+# Lazy import for I2V pipeline (avoid loading at startup)
+WanImageToVideoPipeline = None
+
 def _can_torch_compile():
     """Check if torch.compile with inductor backend is usable (requires Triton)."""
     try:
@@ -429,6 +432,285 @@ class VideoGenerator:
         for frame in frames:
             arr = np.asarray(frame)
             # Convert float [0,1] to uint8 [0,255] if needed
+            if arr.dtype != np.uint8:
+                arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
+            writer.append_data(arr)
+        writer.close()
+        return output_path
+
+
+# ── WAN Image-to-Video Generator ───────────────────────────────────────────
+
+def _is_wan_i2v_model(model_path):
+    """Check if a model directory contains a WAN Image-to-Video pipeline."""
+    index_file = model_path / "model_index.json"
+    if not index_file.exists():
+        return False
+    try:
+        data = json.loads(index_file.read_text(encoding="utf-8"))
+        class_name = data.get("_class_name", "")
+        return "WanImageToVideo" in class_name
+    except Exception:
+        return False
+
+
+class WanI2VGenerator:
+    """WAN Image-to-Video generator.
+
+    Uses WanImageToVideoPipeline which requires a different transformer
+    architecture (Wan I2V blocks) plus CLIP image encoder. This is a
+    separate model from the WAN T2V model.
+    """
+
+    def __init__(self):
+        self.pipe = None
+        self._model_name = None
+        self._interrupt = False
+        self._transformer_keys = None
+        self._active_loras = []
+
+    def get_available_models(self):
+        """List WAN I2V models in models/wan_i2v/ directory."""
+        config.WAN_I2V_DIR.mkdir(parents=True, exist_ok=True)
+        models = []
+        for item in config.WAN_I2V_DIR.iterdir():
+            if item.is_dir() and _is_wan_i2v_model(item):
+                models.append(item.name)
+        return sorted(models)
+
+    def unload_model(self):
+        """Free VRAM by unloading the current I2V model."""
+        self.pipe = None
+        self._model_name = None
+        self._transformer_keys = None
+        self._active_loras = []
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def load_model(self, model_name, progress_callback=None):
+        """Load a WAN Image-to-Video model with 4-bit quantization."""
+        global WanImageToVideoPipeline
+        if WanImageToVideoPipeline is None:
+            from diffusers import WanImageToVideoPipeline as _WanI2V
+            WanImageToVideoPipeline = _WanI2V
+
+        if self.pipe is not None:
+            self.unload_model()
+
+        local_path = config.WAN_I2V_DIR / model_name
+
+        if progress_callback:
+            progress_callback(f"Loading WAN I2V: {model_name}...")
+
+        # WAN I2V models are large (~14B params). Use 4-bit quantization
+        # like the WAN T2V 14B path.
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+
+        # Check if transformer subfolder exists to decide quantization path
+        transformer_dir = local_path / "transformer"
+        if transformer_dir.exists():
+            # Load transformer with 4-bit quantization
+            from diffusers import WanTransformer3DModel as _Tx
+            transformer = _Tx.from_pretrained(
+                str(local_path),
+                subfolder="transformer",
+                quantization_config=quant_config,
+                torch_dtype=torch.bfloat16,
+                local_files_only=True,
+            )
+
+            vae = AutoencoderKLWan.from_pretrained(
+                str(local_path),
+                subfolder="vae",
+                torch_dtype=torch.bfloat16,
+                local_files_only=True,
+            )
+
+            self.pipe = WanImageToVideoPipeline.from_pretrained(
+                str(local_path),
+                transformer=transformer,
+                vae=vae,
+                torch_dtype=torch.bfloat16,
+                local_files_only=True,
+            )
+        else:
+            # Load full pipeline (smaller models or pre-quantized)
+            self.pipe = WanImageToVideoPipeline.from_pretrained(
+                str(local_path),
+                torch_dtype=torch.bfloat16,
+                local_files_only=True,
+            )
+
+        self.pipe.enable_model_cpu_offload()
+
+        if hasattr(self.pipe.vae, "enable_slicing"):
+            self.pipe.vae.enable_slicing()
+
+        # Cache transformer key names for LoRA compatibility checks
+        self._transformer_keys = set(
+            n for n, _ in self.pipe.transformer.named_parameters()
+        )
+
+        self._model_name = model_name
+        if progress_callback:
+            progress_callback(f"Ready — {model_name}")
+
+    def get_available_loras(self):
+        """List compatible LoRA files (uses WAN LoRA directory)."""
+        lora_dir = config.VIDEO_ARCH_LORA_DIRS["WAN"]
+        lora_dir.mkdir(parents=True, exist_ok=True)
+        loras = []
+        for f in lora_dir.iterdir():
+            if f.suffix == ".safetensors":
+                loras.append(f.name)
+        return sorted(loras)
+
+    def load_loras(self, lora_list):
+        """Load and fuse LoRAs (same pattern as VideoGenerator)."""
+        from pathlib import Path
+        if self._active_loras:
+            self.unload_loras()
+        if not lora_list:
+            return
+
+        adapter_names = []
+        adapter_weights = []
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Already found a")
+            for i, (lora_path, weight) in enumerate(lora_list):
+                p = Path(lora_path)
+                name = f"lora_{i}"
+                self.pipe.load_lora_weights(
+                    str(p.parent), weight_name=p.name, adapter_name=name,
+                )
+                adapter_names.append(name)
+                adapter_weights.append(weight)
+
+        self.pipe.set_adapters(adapter_names, adapter_weights=adapter_weights)
+        self.pipe.fuse_lora(adapter_names=adapter_names, safe_fusing=True)
+        self._active_loras = list(lora_list)
+
+    def unload_loras(self):
+        """Remove all active LoRAs."""
+        if self._active_loras:
+            self.pipe.unfuse_lora()
+            self.pipe.unload_lora_weights()
+            self._active_loras = []
+
+    def set_scheduler(self, scheduler_name: str):
+        """Switch scheduler (same map as T2V WAN)."""
+        if self.pipe is None:
+            return
+        cls = VIDEO_SCHEDULER_MAP.get(scheduler_name)
+        if cls is None:
+            return
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*not expected.*")
+            self.pipe.scheduler = cls.from_config(self.pipe.scheduler.config)
+
+    def interrupt(self):
+        self._interrupt = True
+
+    @property
+    def was_interrupted(self):
+        return self._interrupt
+
+    class _Interrupted(Exception):
+        pass
+
+    def _step_callback(self, pipeline, i, t, callback_kwargs):
+        if self._interrupt:
+            raise self._Interrupted()
+        return callback_kwargs
+
+    def generate_latents(
+        self,
+        source_image,
+        positive_prompt: str,
+        negative_prompt: str = "",
+        num_frames: int = 81,
+        num_inference_steps: int = 50,
+        guidance_scale: float = 5.0,
+        seed: int = -1,
+        scheduler_name: str = "UniPC",
+    ):
+        """Run I2V diffusion and return raw latents.
+
+        Returns latents tensor on success, or None if interrupted.
+        """
+        self._interrupt = False
+        self.set_scheduler(scheduler_name)
+
+        generator = None
+        if seed >= 0:
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+
+        width, height = 832, 480
+
+        kwargs = dict(
+            image=source_image,
+            prompt=positive_prompt,
+            negative_prompt=negative_prompt if negative_prompt else None,
+            num_frames=num_frames,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            generator=generator,
+            width=width,
+            height=height,
+            callback_on_step_end=self._step_callback,
+            output_type="latent",
+        )
+
+        try:
+            with torch.inference_mode():
+                output = self.pipe(**kwargs)
+        except self._Interrupted:
+            self._flush_vram()
+            return None
+
+        return output.frames
+
+    def decode_latents(self, latents):
+        """Decode latents through the WAN VAE (same as VideoGenerator)."""
+        latents = latents.to(self.pipe.vae.dtype)
+
+        latents_mean = (
+            torch.tensor(self.pipe.vae.config.latents_mean)
+            .view(1, self.pipe.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        latents_std = (
+            1.0 / torch.tensor(self.pipe.vae.config.latents_std)
+            .view(1, self.pipe.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        latents = latents / latents_std + latents_mean
+
+        video = self.pipe.vae.decode(latents, return_dict=False)[0]
+        frames = self.pipe.video_processor.postprocess_video(video, output_type="pil")
+        if frames and isinstance(frames[0], list):
+            frames = frames[0]
+        return frames
+
+    def _flush_vram(self):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    @staticmethod
+    def export_video(frames, output_path: str, fps: int = WAN_FPS):
+        """Write PIL frames to MP4."""
+        import imageio
+
+        writer = imageio.get_writer(output_path, fps=fps, codec="libx264")
+        for frame in frames:
+            arr = np.asarray(frame)
             if arr.dtype != np.uint8:
                 arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
             writer.append_data(arr)

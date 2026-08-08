@@ -39,7 +39,7 @@ The browser opens automatically to **http://127.0.0.1:7860**.
 ImaGen uses a 5-tab layout with a top nav bar, bottom sub-nav bar, center canvas area, and right sidebar:
 
 - **Top Nav** — Image Generator, Video Generator, Model Browser, Preview Files, LoRA Training
-- **Bottom Nav** — Sub-tabs for the current mode (e.g. Text to Image / Image to Image / Inpainting)
+- **Bottom Nav** — Sub-tabs for the current mode (e.g. Text to Image / Image to Image / Inpainting / ControlNet)
 - **Canvas** — Center area showing generated images, video player, model browser grid, or file gallery
 - **Sidebar** — Right panel with settings, controls, and generation parameters
 - **Status Bar** — Bottom bar showing current model, seed, and VRAM usage
@@ -103,7 +103,7 @@ Some restricted models require a CivitAI API key. Expand the **API Key** section
 
 ImaGen supports **SD 1.5**, **SDXL**, **Pony**, **Illustrious**, **Flux**, and **Krea 2** architectures for image generation, and **WAN** + **CogVideoX** for video generation.
 
-**Supported — Image Generation (Text to Image / Image to Image / Inpainting):**
+**Supported — Image Generation (Text to Image / Image to Image / Inpainting / ControlNet):**
 
 | Base Model | Architecture | Notes |
 |------------|-------------|-------|
@@ -125,13 +125,13 @@ ImaGen supports **SD 1.5**, **SDXL**, **Pony**, **Illustrious**, **Flux**, and *
 
 **Supported — Video Generation:**
 
-| Base Model | Notes |
-|------------|-------|
-| Wan Video 1.3B t2v | Lite model, ~5GB VRAM |
-| Wan Video 14B t2v | Full model, uses 4-bit quantization |
-| Wan Video 14B i2v 480p | Image-to-video |
-| Wan Video 14B i2v 720p | Image-to-video, higher resolution |
-| CogVideoX-2b | ~5GB VRAM, 720x480 |
+| Base Model | Type | Folder | Notes |
+|------------|------|--------|-------|
+| Wan Video 1.3B t2v | T2V | `models/wan/` | Lite model, ~5GB VRAM |
+| Wan Video 14B t2v | T2V | `models/wan/` | Full model, uses 4-bit quantization |
+| Wan Video 14B i2v 480p | I2V | `models/wan_i2v/` | Image-to-video, requires separate model |
+| Wan Video 14B i2v 720p | I2V | `models/wan_i2v/` | Image-to-video, higher resolution |
+| CogVideoX-2b | T2V + I2V | `models/cogvideox/` | ~5GB VRAM, 720x480, same model for both |
 
 **Not Supported (different architecture):**
 
@@ -176,6 +176,16 @@ Set the upscaler to "None" to disable upscaling.
 3. Click **Generate** and wait a few seconds
 
 During generation, a progress bar at the bottom of the canvas fills as each diffusion step completes. After generation, the **seed** used is displayed in the status bar. Copy it into the Seed field to reproduce the same image.
+
+#### Prompt Token Counter
+
+A live token count badge appears next to each prompt label (e.g. `45/77`) showing how many tokens your prompt uses vs. the model's limit. The badge updates as you type with color coding:
+
+- **Normal** (muted) — within limits
+- **Yellow** — at 85%+ of the limit (approaching truncation)
+- **Red** — over the limit (prompt will be truncated)
+
+Token limits vary by architecture: SDXL/SD1.5/Pony/Illustrious = 77 (CLIP), Flux/Krea 2 = 77 (CLIP) + 512 (T5), WAN = 512 (T5), CogVideoX = 226 (T5). Token counters appear on all prompt textareas across all modes (T2I, I2I, Inpaint, ControlNet, Video, I2V, Animate).
 
 #### Weighted Prompts
 
@@ -312,6 +322,81 @@ Common uses:
 - Fixing faces or hands
 - Removing unwanted objects
 - Adding new elements to a scene
+
+## ControlNet
+
+Select the **ControlNet** sub-tab in the bottom nav bar (under Image Generator). ControlNet lets you guide image generation using structural control images — edges, depth maps, body poses, line art, etc.
+
+> **Note:** ControlNet is supported for all image architectures except Krea 2. The ControlNet sub-tab is automatically dimmed when Krea 2 is selected.
+
+### How It Works
+
+ControlNet takes a "control image" (like an edge map or depth map) and uses it to dictate the structure of the generated image, while your prompt controls the content and style. For example, you can extract the edges from a photo of a person, then generate "an oil painting of a knight in armor" that follows the same pose and composition.
+
+### Adding ControlNet Models
+
+1. Download a ControlNet model (`.safetensors` file or diffusers-format directory)
+2. Place it in `models/controlnet/`
+3. The model appears in the **ControlNet Model** dropdown automatically
+
+ControlNet models are architecture-specific — ensure you use one compatible with your loaded base model (e.g., an SDXL ControlNet for an SDXL checkpoint, or a Flux ControlNet for a Flux checkpoint).
+
+### Generating with ControlNet
+
+1. Load a base model (any architecture except Krea 2)
+2. Select a **ControlNet Model** from the dropdown
+3. Upload a source image (click or drag-and-drop)
+4. Select a **Preprocessor** to extract the control signal from your image:
+
+| Preprocessor | What it extracts | Best for |
+|-------------|-----------------|----------|
+| Canny | Edge detection | General structure, outlines |
+| Depth (MiDaS) | Depth map | Spatial layout, 3D positioning |
+| OpenPose | Body pose skeleton | Character poses |
+| Lineart | Clean line drawing | Illustrations, drawings |
+| SoftEdge (HED) | Soft edges | Smooth outlines |
+| Normal Map | Surface normals | 3D surface detail |
+| Scribble | Rough sketches | Loose compositional guidance |
+| None (raw image) | Nothing — uses image as-is | Pre-processed control maps |
+
+5. Click **Preview** to see what the preprocessor produces before generating
+6. Enter a prompt describing the desired output
+7. Adjust settings:
+   - **Conditioning Scale** (0.0–2.0, default 1.0) — how strongly ControlNet influences the output. Lower = more creative freedom, higher = stricter adherence to the control image.
+   - **Guidance Start** (0.0–1.0, default 0.0) — at which diffusion step ControlNet starts influencing
+   - **Guidance End** (0.0–1.0, default 1.0) — at which diffusion step ControlNet stops influencing
+   - **Guess Mode** — ControlNet tries to recognize the content without the prompt
+8. Click **Generate**
+
+> **Note:** ControlNet preprocessor detector models (~100-300MB each) are downloaded from HuggingFace on first use. Subsequent uses are instant.
+
+> **Note:** LoRAs applied to the base model also affect ControlNet generation, since the ControlNet pipeline shares the same UNet/transformer. VRAM usage increases by ~1.2GB (SD 1.5) or ~2.5GB (SDXL) on top of the base model.
+
+## Image to Video
+
+Select the **Image to Video** sub-tab under the Video Generator tab. This converts a still image into a short video clip.
+
+### CogVideoX I2V
+
+CogVideoX image-to-video reuses the same model you already loaded for text-to-video — no extra download needed.
+
+1. Load a CogVideoX model in the Text to Video tab
+2. Switch to the **Image to Video** sub-tab
+3. Upload a source image
+4. Enter a prompt describing the desired motion (e.g. "camera slowly panning right, wind blowing through trees")
+5. Adjust duration, FPS, steps, and other settings
+6. Click **Generate**
+
+### WAN I2V
+
+WAN image-to-video requires a separate model (different transformer architecture + CLIP image encoder) from the T2V models.
+
+1. Download a WAN I2V model in diffusers format and place it in `models/wan_i2v/`
+2. Switch to the **Image to Video** sub-tab
+3. Select and load a WAN I2V model from the dropdown
+4. Upload a source image
+5. Enter a prompt and adjust settings
+6. Click **Generate**
 
 ## Animate Image
 
@@ -469,10 +554,11 @@ ImaGen/
 ├── pipeline.py             # Image generation pipeline (txt2img, img2img, inpainting)
 ├── flux_pipeline.py        # Flux image generation pipeline
 ├── krea2_pipeline.py       # Krea 2 image generation pipeline (12.9B DiT, Turbo/Raw)
-├── video_pipeline.py       # Video generation pipeline (WAN 2.1)
-├── cogvideox_pipeline.py   # CogVideoX video pipeline (fp16 diffusion + fp32 VAE decode)
+├── video_pipeline.py       # Video generation pipeline (WAN 2.1 T2V + I2V)
+├── cogvideox_pipeline.py   # CogVideoX video pipeline (T2V + I2V, fp16 diffusion + fp32 VAE decode)
 ├── video_chunker.py        # VRAM-safe video generation (chunked VAE decode)
 ├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
+├── controlnet_pipeline.py  # ControlNet pipeline (borrows base model components)
 ├── civitai_browser.py      # CivitAI model search and download
 ├── upscaler.py             # AI upscaler inference (Spandrel)
 ├── prompt_parser.py        # Weighted prompt syntax parser
@@ -490,9 +576,11 @@ ImaGen/
 │   ├── flux/               # Flux architecture models
 │   ├── krea2/              # Krea 2 architecture models
 │   │   └── _encoders/      # Auto-cached text encoder + VAE (single-file loading)
-│   ├── wan/                # WAN 2.1 video models
-│   ├── cogvideox/          # CogVideoX video models
+│   ├── wan/                # WAN 2.1 T2V video models
+│   ├── wan_i2v/            # WAN 2.1 I2V video models
+│   ├── cogvideox/          # CogVideoX video models (T2V + I2V)
 │   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
+│   ├── controlnet/         # ControlNet models (.safetensors or diffusers dirs)
 │   └── vaes/               # Custom VAE files (.safetensors or diffusers dirs)
 ├── upscalers/              # Upscaler model files (auto-created)
 ├── loras/                  # LoRA adapter files (per-architecture subdirectories, auto-created)
@@ -548,3 +636,12 @@ ImaGen/
 
 **Krea 2: "FP8-scaled checkpoints..." error**
 - FP8-scaled checkpoints (e.g. `_fp8_scaled` variants) use a quantization format incompatible with diffusers. Use a bf16 or non-scaled fp8 checkpoint instead.
+
+**ControlNet tab is dimmed/disabled**
+- ControlNet is not supported with Krea 2. Switch to any other architecture (SDXL, SD 1.5, Pony, Illustrious, or Flux).
+
+**ControlNet preprocessor is slow on first use**
+- Preprocessor detector models (~100-300MB each) are downloaded from HuggingFace on first use. Subsequent runs use the cached model and are instant.
+
+**WAN I2V model not showing**
+- WAN I2V models go in `models/wan_i2v/`, not `models/wan/`. They use a different transformer architecture and cannot be mixed with T2V models.

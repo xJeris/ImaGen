@@ -125,6 +125,12 @@ const API = {
     return res.json();
   },
 
+  // ── Token Count ──────────────────────────────────────────
+
+  tokenCount(text, architecture, mode = 'image') {
+    return this.post('/api/token-count', { text, architecture, mode });
+  },
+
   // ── Status ────────────────────────────────────────────────
 
   getStatus() {
@@ -276,6 +282,62 @@ const API = {
 
   saveVideo() {
     return this.post('/api/video/save');
+  },
+
+  // ── Image-to-Video ───────────────────────────────────────
+
+  getI2VModels() {
+    return this.get('/api/video/i2v/models');
+  },
+
+  loadI2VModel(model) {
+    return this.post('/api/video/i2v/model', { model });
+  },
+
+  generateI2V(formData) {
+    return this.postForm('/api/video/img2vid', formData);
+  },
+
+  getI2VPreviewUrl() {
+    return `/api/video/i2v/preview?t=${Date.now()}`;
+  },
+
+  interruptI2V() {
+    return this.post('/api/video/i2v/interrupt');
+  },
+
+  saveI2V() {
+    return this.post('/api/video/i2v/save');
+  },
+
+  // ── ControlNet ──────────────────────────────────────────────
+
+  getControlNetModels() {
+    return this.get('/api/controlnet/models');
+  },
+
+  getControlNetPreprocessors() {
+    return this.get('/api/controlnet/preprocessors');
+  },
+
+  loadControlNet(model) {
+    return this.post('/api/controlnet/load', { model });
+  },
+
+  preprocessControlNet(formData) {
+    return this.postForm('/api/controlnet/preprocess', formData);
+  },
+
+  generateControlNet(formData) {
+    return this.postForm('/api/controlnet/generate', formData);
+  },
+
+  interruptControlNet() {
+    return this.post('/api/controlnet/interrupt');
+  },
+
+  saveControlNet(saveHistory) {
+    return this.post('/api/controlnet/save', { save_history: saveHistory });
   },
 
   // ── AnimateDiff ────────────────────────────────────────────

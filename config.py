@@ -62,6 +62,10 @@ ARCHITECTURES = ["SDXL / SD 1.5", "Pony", "Illustrious", "Flux", "Krea 2"]
 # Architectures that support img2img / inpainting (shown in I2I tab dropdown)
 I2I_ARCHITECTURES = [a for a in ARCHITECTURES if a != "Krea 2"]
 
+# Architectures that support ControlNet
+CONTROLNET_ARCHITECTURES = [a for a in ARCHITECTURES if a != "Krea 2"]
+CONTROLNET_DIR = MODEL_CACHE_DIR / "controlnet"
+
 ARCH_MODEL_DIRS = {
     "SDXL / SD 1.5": MODEL_CACHE_DIR / "sdxl",
     "Pony": MODEL_CACHE_DIR / "pony",
@@ -119,6 +123,7 @@ ARCH_DEFAULTS = {
 # ── Video multi-architecture support ──
 COGVIDEOX_DIR = MODEL_CACHE_DIR / "cogvideox"
 COGVIDEOX_LORA_DIR = LORA_DIR / "cogvideox"
+WAN_I2V_DIR = MODEL_CACHE_DIR / "wan_i2v"
 
 VIDEO_ARCHITECTURES = ["WAN", "CogVideoX"]
 
@@ -156,5 +161,5 @@ VIDEO_ARCH_DEFAULTS = {
 # Auto-create architecture subdirectories
 for _d in (list(ARCH_MODEL_DIRS.values()) + list(ARCH_LORA_DIRS.values())
            + list(VIDEO_ARCH_MODEL_DIRS.values()) + list(VIDEO_ARCH_LORA_DIRS.values())
-           + [VAE_DIR, PROFILES_DIR]):
+           + [VAE_DIR, PROFILES_DIR, WAN_I2V_DIR, CONTROLNET_DIR]):
     _d.mkdir(parents=True, exist_ok=True)

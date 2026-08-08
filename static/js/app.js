@@ -31,6 +31,12 @@ const state = {
   // Animate state
   animGenerating: false,
   animSourceFile: null,   // File object for animation source
+  // Img2Vid state
+  i2vGenerating: false,
+  i2vSourceFile: null,    // File object for img2vid source
+  // ControlNet state
+  cnGenerating: false,
+  cnSourceFile: null,     // File object for ControlNet source
 };
 
 // ── Initialization ──────────────────────────────────────────
@@ -103,11 +109,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       populateSelect('#arch-select', archs);
       populateSelect('#i2i-arch-select', i2iArchs);
       populateSelect('#inp-arch-select', i2iArchs);
+      const cnArchs = archs.filter(a => a !== 'Krea 2');
+      populateSelect('#cn-arch-select', cnArchs);
       if (status.architecture) {
         $('#arch-select').value = status.architecture;
         if (i2iArchs.includes(status.architecture)) {
           $('#i2i-arch-select').value = status.architecture;
           $('#inp-arch-select').value = status.architecture;
+        }
+        if (cnArchs.includes(status.architecture)) {
+          $('#cn-arch-select').value = status.architecture;
         }
       }
     }
@@ -158,14 +169,17 @@ document.addEventListener('DOMContentLoaded', async () => {
           updatePromptGuide(result.guide);
         }
         showMessage('success', result.status);
+        if (window.refreshAllTokenCounts) window.refreshAllTokenCounts();
+        updateCNTabState();
+        loadCNModelList();
       } catch (e) {
         showMessage('error', e.message);
       }
     });
   }
 
-  // Wire architecture change (I2I and Inpaint — sync all)
-  ['#i2i-arch-select', '#inp-arch-select'].forEach(sel => {
+  // Wire architecture change (I2I, Inpaint, ControlNet — sync all)
+  ['#i2i-arch-select', '#inp-arch-select', '#cn-arch-select'].forEach(sel => {
     const el = $(sel);
     if (el) {
       el.addEventListener('change', async () => {
@@ -187,6 +201,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             updatePromptGuide(result.guide);
           }
           showMessage('success', result.status);
+          if (window.refreshAllTokenCounts) window.refreshAllTokenCounts();
+          updateCNTabState();
+          loadCNModelList();
         } catch (e) {
           showMessage('error', e.message);
         }
@@ -520,6 +537,118 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load animate model lists
   loadAnimateModelLists();
 
+  // ══════════════════════════════════════════════════════════
+  // IMAGE-TO-VIDEO WIRING
+  // ══════════════════════════════════════════════════════════
+
+  initI2VSourceUpload();
+
+  // Wire I2V model load button (WAN I2V only)
+  const loadI2VBtn = $('#btn-load-i2v-model');
+  if (loadI2VBtn) {
+    loadI2VBtn.addEventListener('click', async () => {
+      const modelSel = $('#i2v-model-select');
+      if (!modelSel || !modelSel.value) { showMessage('error', 'Select a model'); return; }
+      try {
+        showMessage('info', 'Loading WAN I2V model...');
+        const result = await API.loadI2VModel(modelSel.value);
+        showMessage('success', result.status);
+        $('#i2v-model-status').textContent = result.status;
+      } catch (e) {
+        showMessage('error', e.message);
+      }
+    });
+  }
+
+  // Wire I2V generate button
+  const i2vBtn = $('#btn-generate-i2v');
+  if (i2vBtn) {
+    i2vBtn.addEventListener('click', () => runI2VGeneration());
+  }
+
+  // Wire I2V stop button
+  const stopI2VBtn = $('#btn-stop-i2v');
+  if (stopI2VBtn) {
+    stopI2VBtn.addEventListener('click', async () => {
+      try { await API.interruptI2V(); showMessage('info', 'Stopping...'); } catch (e) { showMessage('error', e.message); }
+    });
+  }
+
+  // Wire I2V save button
+  const saveI2VBtn = $('#btn-save-i2v');
+  if (saveI2VBtn) {
+    saveI2VBtn.addEventListener('click', async () => {
+      try {
+        const result = await API.saveI2V();
+        showMessage('success', `Saved: ${result.path}`);
+      } catch (e) {
+        showMessage('error', e.message);
+      }
+    });
+  }
+
+  // Load I2V model list
+  loadI2VModelList();
+
+  // ══════════════════════════════════════════════════════════
+  // CONTROLNET WIRING
+  // ══════════════════════════════════════════════════════════
+
+  initCNSourceUpload();
+
+  // Wire ControlNet generate button
+  const cnGenBtn = $('#btn-generate-controlnet');
+  if (cnGenBtn) cnGenBtn.addEventListener('click', () => runControlNet());
+
+  // Wire ControlNet stop button
+  const cnStopBtn = $('#btn-stop-controlnet');
+  if (cnStopBtn) {
+    cnStopBtn.addEventListener('click', async () => {
+      try { await API.interruptControlNet(); showMessage('info', 'Stopping...'); } catch (e) { showMessage('error', e.message); }
+    });
+  }
+
+  // Wire ControlNet save button
+  const cnSaveBtn = $('#btn-save-controlnet');
+  if (cnSaveBtn) {
+    cnSaveBtn.addEventListener('click', async () => {
+      try {
+        const saveHistory = $('#cn-save-history')?.checked || false;
+        const result = await API.saveControlNet(saveHistory);
+        showMessage('success', `Saved: ${result.path}`);
+      } catch (e) {
+        showMessage('error', e.message);
+      }
+    });
+  }
+
+  // Wire ControlNet preview button
+  const cnPreviewBtn = $('#btn-cn-preview');
+  if (cnPreviewBtn) cnPreviewBtn.addEventListener('click', () => previewCNPreprocess());
+
+  // Wire ControlNet model dropdown change
+  const cnControlnetSelect = $('#cn-controlnet-select');
+  if (cnControlnetSelect) {
+    cnControlnetSelect.addEventListener('change', async () => {
+      const model = cnControlnetSelect.value;
+      if (!model) return;
+      try {
+        showMessage('info', `Loading ControlNet: ${model}...`);
+        const result = await API.loadControlNet(model);
+        showMessage('success', result.status || 'ControlNet loaded');
+      } catch (e) {
+        showMessage('error', e.message);
+      }
+    });
+  }
+
+  // Load ControlNet model list and preprocessors
+  loadCNModelList();
+  loadCNPreprocessors();
+
+  // Dim ControlNet sub-tab if Krea 2 is selected
+  updateCNTabState();
+
   // ── Model Browser event wiring ──
   const btnSearch = $('#btn-search');
   if (btnSearch) btnSearch.addEventListener('click', () => searchBrowser());
@@ -747,19 +876,19 @@ function switchSubMode(sub, el) {
 
   // Canvas panel mapping
   const canvasPanels = {
-    t2i: 'canvas-image', i2i: 'canvas-i2i', inpaint: 'canvas-inpaint',
-    t2v: 'canvas-video', animate: 'canvas-animate',
+    t2i: 'canvas-image', i2i: 'canvas-i2i', inpaint: 'canvas-inpaint', controlnet: 'canvas-controlnet',
+    t2v: 'canvas-video', img2vid: 'canvas-img2vid', animate: 'canvas-animate',
     browse: 'canvas-browser', preview: 'canvas-preview', train: 'canvas-training',
   };
   // Sidebar panel mapping
   const sidebarPanels = {
-    t2i: 'sidebar-image', i2i: 'sidebar-i2i', inpaint: 'sidebar-inpaint',
-    t2v: 'sidebar-video', animate: 'sidebar-animate',
+    t2i: 'sidebar-image', i2i: 'sidebar-i2i', inpaint: 'sidebar-inpaint', controlnet: 'sidebar-controlnet',
+    t2v: 'sidebar-video', img2vid: 'sidebar-img2vid', animate: 'sidebar-animate',
     browse: 'sidebar-browser', preview: 'sidebar-preview', train: 'sidebar-training',
   };
 
-  const allCanvas = ['canvas-image', 'canvas-i2i', 'canvas-inpaint', 'canvas-video', 'canvas-animate', 'canvas-browser', 'canvas-preview', 'canvas-training'];
-  const allSidebar = ['sidebar-image', 'sidebar-i2i', 'sidebar-inpaint', 'sidebar-video', 'sidebar-animate', 'sidebar-browser', 'sidebar-preview', 'sidebar-training'];
+  const allCanvas = ['canvas-image', 'canvas-i2i', 'canvas-inpaint', 'canvas-controlnet', 'canvas-video', 'canvas-img2vid', 'canvas-animate', 'canvas-browser', 'canvas-preview', 'canvas-training'];
+  const allSidebar = ['sidebar-image', 'sidebar-i2i', 'sidebar-inpaint', 'sidebar-controlnet', 'sidebar-video', 'sidebar-img2vid', 'sidebar-animate', 'sidebar-browser', 'sidebar-preview', 'sidebar-training'];
 
   allCanvas.forEach(id => {
     const el2 = document.getElementById(id);
@@ -769,7 +898,7 @@ function switchSubMode(sub, el) {
   // Show/hide the image-area wrapper (contains t2i, i2i, inpaint canvases)
   const imageArea = document.getElementById('canvas-image-area');
   if (imageArea) {
-    const imageAreaModes = ['t2i', 'i2i', 'inpaint'];
+    const imageAreaModes = ['t2i', 'i2i', 'inpaint', 'controlnet'];
     imageArea.classList.toggle('panel-hidden', !imageAreaModes.includes(sub));
   }
   allSidebar.forEach(id => {
@@ -916,7 +1045,7 @@ function populateSelectAll(selector, items, placeholder = null) {
 
 /** Sync all architecture dropdowns to the same value */
 function syncArchDropdowns(value) {
-  ['#arch-select', '#i2i-arch-select', '#inp-arch-select'].forEach(sel => {
+  ['#arch-select', '#i2i-arch-select', '#inp-arch-select', '#cn-arch-select'].forEach(sel => {
     const el = $(sel);
     if (el) {
       // Only set if the value exists in this dropdown
@@ -1489,6 +1618,7 @@ function setGeneratingUI(generating, mode = 't2i') {
     t2i: { gen: '#btn-generate', stop: '#btn-stop', canvas: '#canvas-image' },
     i2i: { gen: '#btn-generate-i2i', stop: '#btn-stop-i2i', canvas: '#canvas-i2i' },
     inpaint: { gen: '#btn-generate-inpaint', stop: '#btn-stop-inpaint', canvas: '#canvas-inpaint' },
+    controlnet: { gen: '#btn-generate-controlnet', stop: '#btn-stop-controlnet', canvas: '#canvas-controlnet' },
   };
 
   const m = btnMap[mode] || btnMap.t2i;
@@ -1762,6 +1892,41 @@ function renderBrowserTiles(results) {
   });
 }
 
+function _fitDetailDesc(descEl) {
+  // Calculate how much vertical space is available for the description
+  // by measuring everything else in the sidebar browser panel.
+  const sidebar = document.getElementById('sidebar');
+  const detail = document.getElementById('model-detail');
+  if (!sidebar || !detail) return;
+
+  const sidebarHeight = sidebar.clientHeight;
+
+  // Sum heights of all siblings in #model-detail except the description
+  let siblingsHeight = 0;
+  for (const child of detail.children) {
+    if (child !== descEl) siblingsHeight += child.offsetHeight + parseFloat(getComputedStyle(child).marginTop) + parseFloat(getComputedStyle(child).marginBottom);
+  }
+
+  // Sum heights of all sidebar-sections except the one containing model-detail
+  const browserPanel = document.getElementById('sidebar-browser');
+  if (!browserPanel) return;
+  let otherSectionsHeight = 0;
+  for (const section of browserPanel.children) {
+    if (section.contains(detail)) {
+      // Add the section's padding + the "Selected Model" label height
+      const style = getComputedStyle(section);
+      otherSectionsHeight += parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+      const label = section.querySelector('.section-label');
+      if (label) otherSectionsHeight += label.offsetHeight + parseFloat(getComputedStyle(label).marginBottom);
+    } else {
+      otherSectionsHeight += section.offsetHeight;
+    }
+  }
+
+  const available = sidebarHeight - otherSectionsHeight - siblingsHeight - 10;
+  descEl.style.maxHeight = Math.max(60, available) + 'px';
+}
+
 function selectBrowserTile(card, model) {
   // Deselect others
   $$('#canvas-browser .model-card').forEach(c => c.classList.remove('selected'));
@@ -1790,6 +1955,8 @@ function selectBrowserTile(card, model) {
     } else {
       descEl.textContent = 'No description available.';
     }
+    // Fit description to available space after layout settles
+    requestAnimationFrame(() => _fitDetailDesc(descEl));
   }
 
   // Tags / trigger words
@@ -2329,6 +2496,384 @@ function setAnimGeneratingUI(generating) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// IMAGE-TO-VIDEO
+// ══════════════════════════════════════════════════════════════
+
+async function loadI2VModelList() {
+  try {
+    const data = await API.getI2VModels();
+    const modelSel = $('#i2v-model-select');
+    const modelGroup = $('#i2v-model-group');
+    if (modelSel && data.wan_i2v_models) {
+      populateSelect('#i2v-model-select', data.wan_i2v_models, '(none)');
+    }
+    // Show WAN I2V model selector only when WAN is active video arch
+    // (CogVideoX reuses T2V model)
+    updateI2VArchDisplay();
+  } catch (e) {
+    // Not critical
+  }
+}
+
+function updateI2VArchDisplay() {
+  const archDisplay = $('#i2v-arch-display');
+  const modelGroup = $('#i2v-model-group');
+  // Read the video arch from the video architecture dropdown
+  const videoArchSel = $('#video-arch-select');
+  const arch = videoArchSel ? videoArchSel.value : 'WAN';
+  if (archDisplay) archDisplay.textContent = arch;
+  if (modelGroup) {
+    modelGroup.style.display = (arch === 'WAN') ? 'block' : 'none';
+  }
+}
+
+function initI2VSourceUpload() {
+  const dropzone = $('#i2v-source-dropzone');
+  if (!dropzone) return;
+
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'image/*';
+  fileInput.style.display = 'none';
+  dropzone.appendChild(fileInput);
+
+  dropzone.addEventListener('click', (e) => {
+    if (e.target.id === 'i2v-clear-source') return;
+    fileInput.click();
+  });
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length > 0) handleI2VFile(fileInput.files[0]);
+  });
+
+  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length > 0) handleI2VFile(e.dataTransfer.files[0]);
+  });
+
+  const clearBtn = $('#i2v-clear-source');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearI2VSource();
+    });
+  }
+}
+
+function handleI2VFile(file) {
+  if (!file.type.startsWith('image/')) {
+    showMessage('error', 'Please upload an image file.');
+    return;
+  }
+  state.i2vSourceFile = file;
+  const preview = $('#i2v-source-preview');
+  const icon = $('#i2v-source-icon');
+  const hint = $('#i2v-source-hint');
+  const clearBtn = $('#i2v-clear-source');
+
+  if (preview) {
+    preview.src = URL.createObjectURL(file);
+    preview.style.display = 'block';
+  }
+  if (icon) icon.style.display = 'none';
+  if (hint) hint.style.display = 'none';
+  if (clearBtn) clearBtn.style.display = 'block';
+}
+
+function clearI2VSource() {
+  state.i2vSourceFile = null;
+  const preview = $('#i2v-source-preview');
+  const icon = $('#i2v-source-icon');
+  const hint = $('#i2v-source-hint');
+  const clearBtn = $('#i2v-clear-source');
+
+  if (preview) { preview.style.display = 'none'; preview.src = ''; }
+  if (icon) icon.style.display = 'block';
+  if (hint) hint.style.display = 'block';
+  if (clearBtn) clearBtn.style.display = 'none';
+}
+
+async function runI2VGeneration() {
+  if (state.i2vGenerating) return;
+  dismissMessage();
+  if (!state.i2vSourceFile) {
+    showMessage('error', 'Please upload a source image first.');
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append('source_image', state.i2vSourceFile);
+  fd.append('positive_prompt', $('#i2v-positive-prompt')?.value || '');
+  fd.append('negative_prompt', $('#i2v-negative-prompt')?.value || '');
+  fd.append('duration', $('#i2v-duration')?.value || '2');
+  fd.append('fps', $('#i2v-fps')?.value || '24');
+  fd.append('steps', $('#i2v-steps')?.value || '25');
+  fd.append('guidance_scale', $('#i2v-cfg')?.value || '5');
+  fd.append('seed', $('#i2v-seed')?.value || '-1');
+  fd.append('scheduler', $('#i2v-scheduler')?.value || 'UniPC');
+
+  state.i2vGenerating = true;
+  setI2VGeneratingUI(true);
+
+  try {
+    const result = await API.generateI2V(fd);
+
+    if (result.status === 'interrupted') {
+      showMessage('info', 'Generation stopped.');
+    } else if (result.video_url) {
+      displayI2VVideo(result.video_url);
+      showMessage('success', `Video generated. Seed: ${result.seed} | ${result.num_frames} frames`);
+    }
+  } catch (e) {
+    showMessage('error', e.message);
+  } finally {
+    state.i2vGenerating = false;
+    setI2VGeneratingUI(false);
+    try {
+      const status = await API.getStatus();
+      updateVRAM(status.vram);
+    } catch (_) {}
+  }
+}
+
+function displayI2VVideo(url) {
+  const player = $('#i2v-player');
+  const icon = $('#i2v-output-icon');
+  const hint = $('#i2v-output-hint');
+  if (player) {
+    player.src = url;
+    player.style.display = 'block';
+    player.load();
+  }
+  if (icon) icon.style.display = 'none';
+  if (hint) hint.style.display = 'none';
+}
+
+function setI2VGeneratingUI(generating) {
+  const genBtn = $('#btn-generate-i2v');
+  const stopBtn = $('#btn-stop-i2v');
+  if (genBtn) {
+    genBtn.disabled = generating;
+    genBtn.textContent = generating ? 'Generating...' : 'Generate Video';
+  }
+  if (stopBtn) stopBtn.style.display = generating ? 'inline-block' : 'none';
+}
+
+// ══════════════════════════════════════════════════════════════
+// CONTROLNET
+// ══════════════════════════════════════════════════════════════
+
+function initCNSourceUpload() {
+  const dropzone = $('#cn-dropzone');
+  const fileInput = $('#cn-file-input');
+  if (!dropzone || !fileInput) return;
+
+  dropzone.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length > 0) handleCNFile(fileInput.files[0]);
+  });
+
+  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length > 0) handleCNFile(e.dataTransfer.files[0]);
+  });
+
+  const clearBtn = $('#cn-clear-source');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      clearCNSource();
+    });
+  }
+}
+
+function handleCNFile(file) {
+  if (!file.type.startsWith('image/')) {
+    showMessage('error', 'Please upload an image file.');
+    return;
+  }
+  state.cnSourceFile = file;
+  const preview = $('#cn-source-preview');
+  const processed = $('#cn-processed-preview');
+  const dropzone = $('#cn-dropzone');
+  const clearBtn = $('#cn-clear-source');
+
+  if (preview) {
+    preview.src = URL.createObjectURL(file);
+    preview.style.display = 'block';
+  }
+  if (processed) processed.style.display = 'none';
+  if (dropzone) dropzone.style.display = 'none';
+  if (clearBtn) clearBtn.style.display = 'block';
+}
+
+function clearCNSource() {
+  state.cnSourceFile = null;
+  const preview = $('#cn-source-preview');
+  const processed = $('#cn-processed-preview');
+  const dropzone = $('#cn-dropzone');
+  const clearBtn = $('#cn-clear-source');
+  const fileInput = $('#cn-file-input');
+
+  if (preview) { preview.style.display = 'none'; preview.src = ''; }
+  if (processed) { processed.style.display = 'none'; processed.src = ''; }
+  if (dropzone) dropzone.style.display = 'flex';
+  if (clearBtn) clearBtn.style.display = 'none';
+  if (fileInput) fileInput.value = '';
+}
+
+async function previewCNPreprocess() {
+  if (!state.cnSourceFile) {
+    showMessage('error', 'Please upload a source image first.');
+    return;
+  }
+
+  const preprocessor = $('#cn-preprocessor-select')?.value || 'None (raw image)';
+  if (preprocessor === 'None (raw image)') {
+    // Hide processed preview, just show original
+    const processed = $('#cn-processed-preview');
+    if (processed) processed.style.display = 'none';
+    showMessage('info', 'No preprocessor selected — using raw image.');
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append('source_image', state.cnSourceFile);
+  fd.append('preprocessor', preprocessor);
+
+  try {
+    showMessage('info', 'Running preprocessor...');
+    const result = await API.preprocessControlNet(fd);
+    if (result.image) {
+      const processed = $('#cn-processed-preview');
+      if (processed) {
+        processed.src = `data:image/png;base64,${result.image}`;
+        processed.style.display = 'block';
+      }
+      showMessage('success', `Preprocessed with ${preprocessor}`);
+    }
+  } catch (e) {
+    showMessage('error', e.message);
+  }
+}
+
+async function runControlNet() {
+  if (state.cnGenerating) return;
+  dismissMessage();
+  if (!state.cnSourceFile) {
+    showMessage('error', 'Please upload a source image first.');
+    return;
+  }
+
+  const cnModel = $('#cn-controlnet-select')?.value;
+  if (!cnModel) {
+    showMessage('error', 'Please select a ControlNet model.');
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append('source_image', state.cnSourceFile);
+  fd.append('controlnet_model', cnModel);
+  fd.append('preprocessor', $('#cn-preprocessor-select')?.value || 'None (raw image)');
+  fd.append('positive_prompt', $('#cn-positive-prompt')?.value || '');
+  fd.append('negative_prompt', $('#cn-negative-prompt')?.value || '');
+  fd.append('steps', $('#cn-steps-slider')?.value || '30');
+  fd.append('guidance_scale', $('#cn-cfg-slider')?.value || '7.5');
+  fd.append('width', $('#cn-width')?.value || '1024');
+  fd.append('height', $('#cn-height')?.value || '1024');
+  fd.append('seed', $('#cn-seed-input')?.value || '-1');
+  fd.append('scheduler', $('#cn-sampler-select')?.value || 'Euler');
+  fd.append('conditioning_scale', $('#cn-conditioning-scale')?.value || '1.0');
+  fd.append('guidance_start', $('#cn-guidance-start')?.value || '0.0');
+  fd.append('guidance_end', $('#cn-guidance-end')?.value || '1.0');
+  fd.append('guess_mode', $('#cn-guess-mode')?.checked ? 'true' : 'false');
+  fd.append('lora1_name', $('#cn-lora1-select')?.value || 'None');
+  fd.append('lora1_weight', $('#cn-lora1-weight')?.value || '1.0');
+  fd.append('lora2_name', $('#cn-lora2-select')?.value || 'None');
+  fd.append('lora2_weight', $('#cn-lora2-weight')?.value || '1.0');
+
+  state.cnGenerating = true;
+  setGeneratingUI(true, 'controlnet');
+
+  try {
+    const result = await API.generateControlNet(fd);
+
+    if (result.status === 'interrupted') {
+      showMessage('info', 'Generation stopped.');
+    } else if (result.images && result.images.length > 0) {
+      displayImage(result.images[0], '#canvas-controlnet', '#cn-output-image', '#cn-output-placeholder');
+      setSeedDisplay(result.seed);
+      showMessage('success', `Generated. Seed: ${result.seed}`);
+    }
+  } catch (e) {
+    showMessage('error', e.message);
+  } finally {
+    state.cnGenerating = false;
+    setGeneratingUI(false, 'controlnet');
+    try {
+      const status = await API.getStatus();
+      updateVRAM(status.vram);
+    } catch (_) {}
+  }
+}
+
+async function loadCNModelList() {
+  try {
+    const data = await API.getControlNetModels();
+    const select = $('#cn-controlnet-select');
+    if (!select) return;
+    select.innerHTML = '<option value="">(none)</option>';
+    (data.models || []).forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      select.appendChild(opt);
+    });
+  } catch (_) {}
+}
+
+async function loadCNPreprocessors() {
+  try {
+    const data = await API.getControlNetPreprocessors();
+    const select = $('#cn-preprocessor-select');
+    if (!select) return;
+    select.innerHTML = '';
+    (data.preprocessors || []).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      select.appendChild(opt);
+    });
+  } catch (_) {}
+}
+
+function updateCNTabState() {
+  const tab = $('#sub-tab-controlnet');
+  if (!tab) return;
+  // Get current image architecture
+  const archSelect = $('#arch-select');
+  const arch = archSelect?.value || '';
+  if (arch === 'Krea 2') {
+    tab.classList.add('disabled');
+    tab.title = 'ControlNet is not supported with Krea 2';
+    tab.style.opacity = '0.4';
+    tab.style.pointerEvents = 'none';
+  } else {
+    tab.classList.remove('disabled');
+    tab.title = '';
+    tab.style.opacity = '';
+    tab.style.pointerEvents = '';
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
 // LORA TRAINING
 // ══════════════════════════════════════════════════════════════
 
@@ -2458,6 +3003,8 @@ async function loadProfiles(autoLoadDefault = false) {
         const el = $(id);
         if (el && !el.value) el.value = neg;
       });
+      // Trigger token count for the newly filled prompts
+      if (window.refreshAllTokenCounts) window.refreshAllTokenCounts();
     }
   } catch (e) {
     // Not critical
@@ -2598,8 +3145,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // Stop active generation based on current mode
       const sub = state.subMode || state.mode;
       const stopMap = {
-        t2i: '#btn-stop', i2i: '#btn-stop-i2i', inpaint: '#btn-stop-inpaint',
-        t2v: '#btn-stop-video', animate: '#btn-stop-anim', train: '#btn-stop-train',
+        t2i: '#btn-stop', i2i: '#btn-stop-i2i', inpaint: '#btn-stop-inpaint', controlnet: '#btn-stop-controlnet',
+        t2v: '#btn-stop-video', img2vid: '#btn-stop-i2v', animate: '#btn-stop-anim', train: '#btn-stop-train',
       };
       const stopBtn = $(stopMap[sub]);
       if (stopBtn && stopBtn.style.display !== 'none') stopBtn.click();
@@ -2611,8 +3158,8 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       const sub = state.subMode || state.mode;
       const btnMap = {
-        t2i: '#btn-generate', i2i: '#btn-generate-i2i', inpaint: '#btn-generate-inpaint',
-        t2v: '#btn-generate-video', animate: '#btn-animate', train: '#btn-train',
+        t2i: '#btn-generate', i2i: '#btn-generate-i2i', inpaint: '#btn-generate-inpaint', controlnet: '#btn-generate-controlnet',
+        t2v: '#btn-generate-video', img2vid: '#btn-generate-i2v', animate: '#btn-animate', train: '#btn-train',
       };
       const btn = $(btnMap[sub]);
       if (btn && !btn.disabled) btn.click();
@@ -2624,8 +3171,8 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       const sub = state.subMode || state.mode;
       const saveMap = {
-        t2i: '#btn-save', i2i: '#btn-save-i2i', inpaint: '#btn-save-inpaint',
-        t2v: '#btn-save-video', animate: '#btn-save-anim',
+        t2i: '#btn-save', i2i: '#btn-save-i2i', inpaint: '#btn-save-inpaint', controlnet: '#btn-save-controlnet',
+        t2v: '#btn-save-video', img2vid: '#btn-save-i2v', animate: '#btn-save-anim',
       };
       const btn = $(saveMap[sub]);
       if (btn) btn.click();
@@ -2633,3 +3180,126 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+// ── Prompt Token Counter ──────────────────────────────────────────
+
+(function initTokenCounter() {
+  // Map textarea IDs to their mode context (image or video)
+  const TOKEN_TEXTAREAS = [
+    // Image modes
+    { id: 'positive-prompt', mode: 'image' },
+    { id: 'negative-prompt', mode: 'image' },
+    { id: 'i2i-positive-prompt', mode: 'image' },
+    { id: 'i2i-negative-prompt', mode: 'image' },
+    { id: 'inp-positive-prompt', mode: 'image' },
+    { id: 'inp-negative-prompt', mode: 'image' },
+    { id: 'cn-positive-prompt', mode: 'image' },
+    { id: 'cn-negative-prompt', mode: 'image' },
+    // Video modes
+    { id: 'video-positive-prompt', mode: 'video' },
+    { id: 'video-negative-prompt', mode: 'video' },
+    { id: 'i2v-positive-prompt', mode: 'video' },
+    { id: 'i2v-negative-prompt', mode: 'video' },
+    { id: 'anim-positive-prompt', mode: 'video' },
+    { id: 'anim-negative-prompt', mode: 'video' },
+  ];
+
+  // Map positive prompt IDs → their paired description textarea IDs.
+  // Description text is appended to the positive prompt at generation time,
+  // so both must be counted together for an accurate token total.
+  const DESCRIPTION_PAIRS = {
+    'positive-prompt': 'description-prompt',
+    'i2i-positive-prompt': 'i2i-description-prompt',
+    'inp-positive-prompt': 'inp-description-prompt',
+  };
+
+  const _tokenTimers = {};
+
+  function updateTokenBadge(textareaId, counts) {
+    const badge = document.getElementById(textareaId + '-tokens');
+    if (!badge) return;
+
+    if (!counts || !counts.length) {
+      badge.textContent = '';
+      return;
+    }
+
+    const parts = counts.map(c => {
+      const ratio = c.count / c.limit;
+      let color = 'var(--text-muted, #888)';
+      if (ratio > 1.0) color = '#ef4444';
+      else if (ratio > 0.85) color = '#eab308';
+      const prefix = c.estimated ? '~' : '';
+      return `<span style="color:${color}">${prefix}${c.count}/${c.limit}</span>`;
+    });
+
+    badge.innerHTML = parts.join(' | ');
+  }
+
+  function requestTokenCount(textareaId, mode) {
+    const el = document.getElementById(textareaId);
+    if (!el) return;
+
+    // For positive prompts, include the description textarea text
+    let text = el.value;
+    const descId = DESCRIPTION_PAIRS[textareaId];
+    if (descId) {
+      const descEl = document.getElementById(descId);
+      if (descEl && descEl.value.trim()) {
+        text = [text.trim(), descEl.value.trim()].filter(Boolean).join(', ');
+      }
+    }
+
+    if (!text.trim()) {
+      updateTokenBadge(textareaId, []);
+      return;
+    }
+
+    // Get current architecture from the appropriate dropdown
+    let arch = 'SDXL / SD 1.5';
+    if (mode === 'image') {
+      const archSelect = document.getElementById('arch-select');
+      if (archSelect) arch = archSelect.value;
+    }
+
+    API.tokenCount(text, arch, mode)
+      .then(data => updateTokenBadge(textareaId, data.counts))
+      .catch(() => {}); // Silently ignore errors
+  }
+
+  function debouncedTokenCount(textareaId, mode) {
+    if (_tokenTimers[textareaId]) clearTimeout(_tokenTimers[textareaId]);
+    _tokenTimers[textareaId] = setTimeout(() => requestTokenCount(textareaId, mode), 300);
+  }
+
+  // Attach input listeners once DOM is ready
+  document.addEventListener('DOMContentLoaded', () => {
+    TOKEN_TEXTAREAS.forEach(({ id, mode }) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener('input', () => debouncedTokenCount(id, mode));
+      }
+    });
+    // Also listen on description textareas — typing there should recount
+    // the paired positive prompt badge
+    Object.entries(DESCRIPTION_PAIRS).forEach(([posId, descId]) => {
+      const descEl = document.getElementById(descId);
+      if (descEl) {
+        const mode = TOKEN_TEXTAREAS.find(t => t.id === posId)?.mode || 'image';
+        descEl.addEventListener('input', () => debouncedTokenCount(posId, mode));
+      }
+    });
+  });
+
+  // Expose for use when architecture changes (re-count all visible prompts)
+  window.refreshAllTokenCounts = function() {
+    TOKEN_TEXTAREAS.forEach(({ id, mode }) => {
+      const el = document.getElementById(id);
+      if (el && el.value.trim()) {
+        requestTokenCount(id, mode);
+      } else {
+        updateTokenBadge(id, []);
+      }
+    });
+  };
+})();

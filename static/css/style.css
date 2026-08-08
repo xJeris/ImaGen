@@ -411,6 +411,14 @@ body {
   margin-bottom: 4px;
 }
 
+.token-badge {
+  float: right;
+  font-size: 10px;
+  font-weight: normal;
+  font-family: monospace;
+  opacity: 0.8;
+}
+
 .form-select {
   width: 100%;
   padding: 8px 10px;
@@ -845,13 +853,6 @@ body {
   box-shadow: 0 0 12px rgba(147, 51, 234, 0.25);
 }
 
-#sidebar-browser {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 100%;
-}
-
 /* ── Model Detail Panel ── */
 .model-detail-placeholder {
   font-size: 12px;
@@ -862,10 +863,7 @@ body {
 
 .model-detail { display: none; }
 .model-detail.visible {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
+  display: block;
 }
 
 .model-detail .detail-name {
@@ -890,7 +888,6 @@ body {
   color: var(--text-secondary);
   line-height: 1.5;
   margin-bottom: 10px;
-  flex: 1;
   min-height: 60px;
   overflow-y: auto;
 }

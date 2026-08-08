@@ -193,6 +193,11 @@ def _is_cogvideox_generator(video_generator):
     return type(video_generator).__name__ == "CogVideoXGenerator"
 
 
+def _is_wan_i2v_generator(video_generator):
+    """Check if this is a WanI2VGenerator."""
+    return type(video_generator).__name__ == "WanI2VGenerator"
+
+
 def _decode_cogvideox_chunked(video_generator, latents, vae, vae_batch_frames,
                                progress_callback):
     """VAE decode for CogVideoX models.
@@ -249,6 +254,7 @@ def generate_video_chunked(
 
     is_animatediff = _is_animatediff_generator(video_generator)
     is_cogvideox = _is_cogvideox_generator(video_generator)
+    is_wan_i2v = _is_wan_i2v_generator(video_generator)
 
     # ================================================================
     # CogVideoX: single-pass pipeline (diffusion + VAE decode together)
@@ -259,18 +265,33 @@ def generate_video_chunked(
     # ================================================================
     if is_cogvideox:
         if progress_callback:
-            progress_callback(f"Running CogVideoX generation ({num_frames_total} frames)...")
+            mode_label = "Img2Vid" if source_image else "T2V"
+            progress_callback(f"Running CogVideoX {mode_label} ({num_frames_total} frames)...")
 
-        frames = video_generator.generate_latents(
-            positive_prompt=positive_prompt,
-            negative_prompt=negative_prompt,
-            num_frames=num_frames_total,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            seed=seed,
-            scheduler_name=scheduler_name,
-            progress_callback=progress_callback,
-        )
+        if source_image is not None:
+            # CogVideoX Image-to-Video
+            frames = video_generator.img2vid(
+                source_image=source_image,
+                positive_prompt=positive_prompt,
+                negative_prompt=negative_prompt,
+                num_frames=num_frames_total,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                seed=seed,
+                scheduler_name=scheduler_name,
+                progress_callback=progress_callback,
+            )
+        else:
+            frames = video_generator.generate_latents(
+                positive_prompt=positive_prompt,
+                negative_prompt=negative_prompt,
+                num_frames=num_frames_total,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                seed=seed,
+                scheduler_name=scheduler_name,
+                progress_callback=progress_callback,
+            )
 
         if video_generator.was_interrupted or frames is None:
             if progress_callback:
@@ -299,6 +320,17 @@ def generate_video_chunked(
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 controlnet_conditioning_scale=controlnet_conditioning_scale,
+                seed=seed,
+                scheduler_name=scheduler_name,
+            )
+        elif is_wan_i2v:
+            latents = video_generator.generate_latents(
+                source_image=source_image,
+                positive_prompt=positive_prompt,
+                negative_prompt=negative_prompt,
+                num_frames=num_frames_total,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
                 seed=seed,
                 scheduler_name=scheduler_name,
             )

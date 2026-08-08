@@ -332,6 +332,114 @@ class CogVideoXGenerator:
 
         return frames
 
+    def img2vid(
+        self,
+        source_image,
+        positive_prompt: str,
+        negative_prompt: str = "",
+        num_frames: int = 49,
+        num_inference_steps: int = 50,
+        guidance_scale: float = 6.0,
+        seed: int = -1,
+        scheduler_name: str = "DDIM",
+        progress_callback=None,
+    ):
+        """Generate video from image using CogVideoXImageToVideoPipeline.
+
+        Constructs the I2V pipeline from the loaded T2V pipeline's components
+        (no extra model download needed). Same VAE decode flow as generate_latents.
+
+        Returns list of PIL frames on success, or None if interrupted.
+        """
+        from diffusers import CogVideoXImageToVideoPipeline
+
+        if self.pipe is None:
+            raise RuntimeError("Load a CogVideoX model first.")
+
+        self._interrupt = False
+        self.set_scheduler(scheduler_name)
+
+        # Build I2V pipeline from existing T2V components
+        i2v_pipe = CogVideoXImageToVideoPipeline(
+            tokenizer=self.pipe.tokenizer,
+            text_encoder=self.pipe.text_encoder,
+            vae=self.pipe.vae,
+            transformer=self.pipe.transformer,
+            scheduler=self.pipe.scheduler,
+        )
+        i2v_pipe.enable_sequential_cpu_offload()
+        i2v_pipe.vae.enable_slicing()
+
+        generator = None
+        if seed >= 0:
+            generator = torch.Generator(device="cuda").manual_seed(seed)
+
+        width, height = 720, 480
+
+        if progress_callback:
+            progress_callback("Running CogVideoX Img2Vid diffusion...")
+
+        try:
+            output = i2v_pipe(
+                image=source_image,
+                prompt=positive_prompt,
+                negative_prompt=negative_prompt if negative_prompt else None,
+                num_frames=num_frames,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                generator=generator,
+                width=width,
+                height=height,
+                callback_on_step_end=self._step_callback,
+                output_type="latent",
+            )
+        except self._Interrupted:
+            self._flush_vram()
+            return None
+        except Exception as e:
+            import traceback
+            print(f"\n[CogVideoX I2V] Pipeline error: {e}")
+            traceback.print_exc()
+            self._flush_vram()
+            raise
+
+        latents = output.frames
+
+        if progress_callback:
+            progress_callback("Decoding VAE...")
+
+        # Manual VAE decode in float32 (same as generate_latents)
+        from accelerate.hooks import remove_hook_from_module
+
+        vae = self.pipe.vae
+        remove_hook_from_module(vae, recurse=True)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*Casting directly with.*")
+            vae.to(device="cuda", dtype=torch.float32)
+
+        vae.enable_tiling()
+
+        latents = latents.permute(0, 2, 1, 3, 4)
+        latents = (1 / self.pipe.vae_scaling_factor_image) * latents
+        latents = latents.to(device="cuda", dtype=torch.float32)
+
+        with torch.inference_mode():
+            video = vae.decode(latents, return_dict=False)[0]
+
+        vae.to(device="cpu")
+        del latents
+        self._flush_vram()
+
+        frames = self.pipe.video_processor.postprocess_video(video=video, output_type="pil")
+        if frames and isinstance(frames[0], list):
+            frames = frames[0]
+
+        del video
+        self._flush_vram()
+
+        return frames
+
     def _flush_vram(self):
         """Free cached VRAM after interruption."""
         gc.collect()

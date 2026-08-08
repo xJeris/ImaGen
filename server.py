@@ -13,8 +13,23 @@ import os
 import sys
 import signal
 import traceback
+import warnings
 from datetime import datetime
 from pathlib import Path
+
+# ── Suppress harmless third-party library warnings ──────────────────
+# diffusers: empty float32-module list when calling .to() on pipelines
+warnings.filterwarnings("ignore", message=".*should be kept in float32.*")
+# huggingface_hub: deprecated local_dir_use_symlinks parameter
+warnings.filterwarnings("ignore", message=".*local_dir_use_symlinks.*")
+# huggingface_hub: symlink cache warning on Windows
+warnings.filterwarnings("ignore", message=".*cache-system uses symlinks.*")
+# Compel: multi-tokenizer deprecation (migration to CompelFor* wrappers
+# requires API changes — suppress until Compel v3.0 migration)
+warnings.filterwarnings("ignore", message=".*passing multiple tokenizers.*")
+# huggingface_hub: "unauthenticated requests" nag (logged, not warned)
+import logging
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 import torch
 from PIL import Image
@@ -205,6 +220,12 @@ def _resolve_seed(seed: int) -> int:
     if actual < 0:
         actual = torch.randint(0, 2**32, (1,)).item()
     return actual
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate when no tokenizer is loaded. ~1.3 tokens per word."""
+    words = text.split()
+    return int(len(words) * 1.3)
 
 
 def _build_prompt(positive_prompt: str, description: str = "") -> str:
@@ -537,6 +558,71 @@ async def api_status():
         "vram": _get_vram_info(),
         "device": str(config.DEVICE),
     }
+
+
+@app.post("/api/token-count")
+async def api_token_count(body: dict):
+    """Count prompt tokens using the loaded model's tokenizer."""
+    text = body.get("text", "")
+    mode = body.get("mode", "image")  # "image" or "video"
+
+    if not text.strip():
+        return {"counts": []}
+
+    # Strip weighted prompt syntax [word:weight] → word for accurate counting
+    import re
+    clean = re.sub(r'\[([^:\]]+):[0-9.]+\]', r'\1', text)
+
+    counts = []
+
+    if mode == "video":
+        if _active_video_arch == "WAN":
+            vg = video_generator
+            if vg and vg.pipe is not None:
+                toks = vg.pipe.tokenizer(clean, return_tensors="pt")
+                count = max(0, toks.input_ids.shape[1] - 1)
+                counts.append({"encoder": "T5", "count": count, "limit": 512})
+            else:
+                counts.append({"encoder": "T5", "count": _estimate_tokens(clean), "limit": 512, "estimated": True})
+        elif _active_video_arch == "CogVideoX":
+            vg = cogvideox_generator
+            if vg and vg.pipe is not None:
+                toks = vg.pipe.tokenizer(clean, return_tensors="pt")
+                count = max(0, toks.input_ids.shape[1] - 1)
+                counts.append({"encoder": "T5", "count": count, "limit": 226})
+            else:
+                counts.append({"encoder": "T5", "count": _estimate_tokens(clean), "limit": 226, "estimated": True})
+        # AnimateDiff uses CLIP (SD 1.5 base)
+        else:
+            ag = animatediff_generator
+            if ag and ag.pipe is not None:
+                toks = ag.pipe.tokenizer(clean, return_tensors="pt")
+                count = max(0, toks.input_ids.shape[1] - 2)
+                counts.append({"encoder": "CLIP", "count": count, "limit": 77})
+            else:
+                counts.append({"encoder": "CLIP", "count": _estimate_tokens(clean), "limit": 77, "estimated": True})
+    else:
+        gen = get_generator()
+        if gen.pipe is not None:
+            if _active_arch in ("Flux", "Krea 2"):
+                clip_toks = gen.pipe.tokenizer(clean, return_tensors="pt")
+                clip_count = max(0, clip_toks.input_ids.shape[1] - 2)
+                counts.append({"encoder": "CLIP", "count": clip_count, "limit": 77})
+                if hasattr(gen.pipe, "tokenizer_2") and gen.pipe.tokenizer_2 is not None:
+                    t5_toks = gen.pipe.tokenizer_2(clean, return_tensors="pt")
+                    t5_count = max(0, t5_toks.input_ids.shape[1] - 1)
+                    counts.append({"encoder": "T5", "count": t5_count, "limit": 512})
+                else:
+                    counts.append({"encoder": "T5", "count": _estimate_tokens(clean), "limit": 512, "estimated": True})
+            else:
+                # SDXL / SD 1.5 / Pony / Illustrious — CLIP tokenizer
+                clip_toks = gen.pipe.tokenizer(clean, return_tensors="pt")
+                clip_count = max(0, clip_toks.input_ids.shape[1] - 2)
+                counts.append({"encoder": "CLIP", "count": clip_count, "limit": 77})
+        else:
+            counts.append({"encoder": "CLIP", "count": _estimate_tokens(clean), "limit": 77, "estimated": True})
+
+    return {"counts": counts}
 
 
 @app.get("/api/architectures")
@@ -1281,6 +1367,226 @@ async def api_delete_batch(body: dict):
     return {"status": f"Deleted {len(deleted)} files", "deleted": deleted}
 
 
+# ── ControlNet ────────────────────────────────────────────────────────────────
+
+from controlnet_pipeline import ControlNetRunner, PREPROCESSOR_NAMES, PREPROCESSORS
+
+controlnet_runner = ControlNetRunner()
+_last_cn_image: Image.Image | None = None
+_last_cn_params: dict = {}
+
+
+@app.get("/api/controlnet/models")
+async def api_controlnet_models():
+    return {"models": controlnet_runner.get_available_controlnets()}
+
+
+@app.get("/api/controlnet/preprocessors")
+async def api_controlnet_preprocessors():
+    return {"preprocessors": PREPROCESSOR_NAMES}
+
+
+@app.post("/api/controlnet/load")
+async def api_controlnet_load(body: dict):
+    model_name = body.get("model", "")
+    if not model_name:
+        return JSONResponse({"error": "No model specified"}, status_code=400)
+
+    gen = get_generator()
+    model_type = getattr(gen, '_model_type', 'sdxl')
+
+    def do_load():
+        controlnet_runner.load_controlnet(
+            model_name, model_type,
+            progress_callback=lambda msg: sync_broadcast({"type": "progress", "message": msg}),
+        )
+
+    try:
+        await asyncio.to_thread(do_load)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    return {"status": f"ControlNet loaded: {model_name}"}
+
+
+@app.post("/api/controlnet/preprocess")
+async def api_controlnet_preprocess(
+    source_image: UploadFile = File(...),
+    preprocessor: str = Form("None (raw image)"),
+):
+    """Preview a preprocessed control image (returns base64)."""
+    img_bytes = await source_image.read()
+    src = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    preprocessor_key = PREPROCESSORS.get(preprocessor)
+
+    try:
+        processed = await asyncio.to_thread(
+            controlnet_runner.preprocess_image, src, preprocessor_key,
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    # Convert to base64
+    buf = io.BytesIO()
+    processed.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    return {"image": b64}
+
+
+@app.post("/api/controlnet/generate")
+async def api_controlnet_generate(
+    source_image: UploadFile = File(...),
+    preprocessor: str = Form("None (raw image)"),
+    controlnet_model: str = Form(""),
+    positive_prompt: str = Form(""),
+    negative_prompt: str = Form(""),
+    description: str = Form(""),
+    steps: int = Form(30),
+    guidance_scale: float = Form(7.5),
+    width: int = Form(1024),
+    height: int = Form(1024),
+    seed: int = Form(-1),
+    scheduler: str = Form("Euler"),
+    conditioning_scale: float = Form(1.0),
+    guidance_start: float = Form(0.0),
+    guidance_end: float = Form(1.0),
+    guess_mode: str = Form("false"),
+    lora1_name: str = Form("None"),
+    lora1_weight: float = Form(1.0),
+    lora2_name: str = Form("None"),
+    lora2_weight: float = Form(1.0),
+):
+    global _last_cn_image, _last_cn_params
+
+    if _active_arch not in config.CONTROLNET_ARCHITECTURES:
+        return JSONResponse(
+            {"error": f"{_active_arch} does not support ControlNet"},
+            status_code=400,
+        )
+
+    gen = get_generator()
+    if gen.pipe is None:
+        return JSONResponse({"error": "Load a base model first."}, status_code=400)
+
+    if not controlnet_model:
+        return JSONResponse({"error": "Select a ControlNet model."}, status_code=400)
+
+    try:
+        full_prompt = _build_prompt(positive_prompt, description)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    actual_seed = _resolve_seed(int(seed))
+    model_type = getattr(gen, '_model_type', 'sdxl')
+
+    # Load ControlNet if not loaded or different model
+    if controlnet_runner._controlnet_name != controlnet_model:
+        try:
+            await asyncio.to_thread(
+                controlnet_runner.load_controlnet,
+                controlnet_model, model_type,
+                lambda msg: sync_broadcast({"type": "progress", "message": msg}),
+            )
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # Build pipeline from base generator's components
+    controlnet_runner.build_pipeline(gen)
+
+    # Apply LoRAs to base generator (affects shared UNet)
+    _apply_loras(gen, lora1_name, lora1_weight, lora2_name, lora2_weight)
+
+    # Set scheduler on the base generator (shared scheduler)
+    gen.set_scheduler(scheduler)
+
+    # Read and preprocess source image
+    img_bytes = await source_image.read()
+    src = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    preprocessor_key = PREPROCESSORS.get(preprocessor)
+    try:
+        control_image = await asyncio.to_thread(
+            controlnet_runner.preprocess_image, src, preprocessor_key,
+        )
+    except Exception as e:
+        return JSONResponse({"error": f"Preprocessing failed: {e}"}, status_code=500)
+
+    # Step progress callback
+    step_cb = _make_step_cb()
+    controlnet_runner._progress_callback = step_cb
+
+    sync_broadcast({"type": "status", "message": "Generating with ControlNet..."})
+
+    try:
+        result = await asyncio.to_thread(
+            controlnet_runner.generate,
+            control_image=control_image,
+            positive_prompt=full_prompt,
+            negative_prompt=negative_prompt,
+            steps=int(steps),
+            guidance_scale=float(guidance_scale),
+            width=int(width),
+            height=int(height),
+            seed=actual_seed,
+            controlnet_conditioning_scale=float(conditioning_scale),
+            control_guidance_start=float(guidance_start),
+            control_guidance_end=float(guidance_end),
+            guess_mode=(guess_mode.lower() == "true"),
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        sync_broadcast({"type": "error", "message": str(e)})
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        controlnet_runner._progress_callback = None
+
+    if controlnet_runner.was_interrupted:
+        sync_broadcast({"type": "status", "message": "Interrupted."})
+        return {"status": "interrupted", "seed": actual_seed}
+
+    _last_cn_image = result
+    _last_cn_params = {
+        "prompt": full_prompt,
+        "negative_prompt": negative_prompt,
+        "seed": actual_seed,
+        "steps": int(steps),
+        "cfg": float(guidance_scale),
+        "width": int(width),
+        "height": int(height),
+        "controlnet": controlnet_model,
+        "preprocessor": preprocessor,
+        "conditioning_scale": float(conditioning_scale),
+    }
+
+    sync_broadcast({"type": "status", "message": f"Done. Seed: {actual_seed}"})
+    return {
+        "status": "ok",
+        "images": [_image_to_base64(result)],
+        "seed": actual_seed,
+    }
+
+
+@app.post("/api/controlnet/interrupt")
+async def api_controlnet_interrupt():
+    controlnet_runner.interrupt()
+    return {"status": "Interrupt requested"}
+
+
+@app.post("/api/controlnet/save")
+async def api_controlnet_save(body: dict = {}):
+    if _last_cn_image is None:
+        return JSONResponse({"error": "No image to save"}, status_code=400)
+    save_history = body.get("save_history", False)
+    path = _save_image_impl(
+        _last_cn_image,
+        _last_cn_params if save_history else None,
+    )
+    return {"status": "Saved", "path": path}
+
+
 # ── Video: architecture & model management ───────────────────────────────────
 
 @app.get("/api/video/architectures")
@@ -1544,6 +1850,194 @@ async def api_video_interrupt():
 @app.post("/api/video/save")
 async def api_video_save():
     path = _video_save_impl(_last_video_path, "vid")
+    if not path:
+        return JSONResponse({"error": "No video to save"}, status_code=400)
+    return {"status": "Saved", "path": path}
+
+
+# ── Image-to-Video ────────────────────────────────────────────────────────────
+
+_last_i2v_path: str | None = None
+wan_i2v_generator = None
+
+
+def _get_wan_i2v_generator():
+    global wan_i2v_generator
+    if wan_i2v_generator is None:
+        from video_pipeline import WanI2VGenerator
+        wan_i2v_generator = WanI2VGenerator()
+    return wan_i2v_generator
+
+
+@app.get("/api/video/i2v/models")
+async def api_i2v_models():
+    """List available I2V models. WAN I2V needs separate models; CogVideoX reuses T2V."""
+    result = {"wan_i2v_models": [], "cogvideox_supports_i2v": True}
+    try:
+        g = _get_wan_i2v_generator()
+        result["wan_i2v_models"] = g.get_available_models()
+    except Exception:
+        pass
+    return result
+
+
+@app.post("/api/video/i2v/model")
+async def api_i2v_load_model(body: dict):
+    """Load a WAN I2V model."""
+    model_name = body.get("model", "")
+    if not model_name:
+        return JSONResponse({"error": "No model specified"}, status_code=400)
+
+    g = _get_wan_i2v_generator()
+
+    def do_load():
+        g.load_model(
+            model_name,
+            progress_callback=lambda msg: sync_broadcast({"type": "progress", "message": msg}),
+        )
+
+    try:
+        await asyncio.to_thread(do_load)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    return {"status": f"WAN I2V model loaded: {model_name}"}
+
+
+@app.post("/api/video/img2vid")
+async def api_video_img2vid(
+    source_image: UploadFile = File(...),
+    positive_prompt: str = Form(""),
+    negative_prompt: str = Form(""),
+    description: str = Form(""),
+    duration: float = Form(2),
+    fps: int = Form(24),
+    steps: int = Form(25),
+    guidance_scale: float = Form(5.0),
+    seed: int = Form(-1),
+    scheduler: str = Form("UniPC"),
+    lora1_name: str = Form("None"),
+    lora1_weight: float = Form(1.0),
+    lora2_name: str = Form("None"),
+    lora2_weight: float = Form(1.0),
+):
+    global _last_i2v_path
+
+    # Read source image
+    img_bytes = await source_image.read()
+    src = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    try:
+        full_prompt = _build_prompt(positive_prompt, description)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    actual_seed = _resolve_seed(int(seed))
+    target_frames = int(duration * fps)
+
+    # Determine generator based on active video architecture
+    if _active_video_arch == "CogVideoX":
+        vg = _get_active_video_generator()
+        if vg.pipe is None:
+            return JSONResponse({"error": "Load a CogVideoX model first."}, status_code=400)
+        num_frames = _round_video_frames(target_frames)
+        _apply_video_loras(vg, lora1_name, lora1_weight, lora2_name, lora2_weight)
+    else:
+        # WAN I2V
+        vg = _get_wan_i2v_generator()
+        if vg.pipe is None:
+            return JSONResponse({"error": "Load a WAN I2V model first."}, status_code=400)
+        num_frames = _round_video_frames(target_frames + 4)
+        lora_dir = config.VIDEO_ARCH_LORA_DIRS["WAN"]
+        lora_list = []
+        if lora1_name and lora1_name != "None":
+            lora_list.append((str(lora_dir / lora1_name), float(lora1_weight)))
+        if lora2_name and lora2_name != "None":
+            lora_list.append((str(lora_dir / lora2_name), float(lora2_weight)))
+        if lora_list:
+            vg.load_loras(lora_list)
+        else:
+            vg.unload_loras()
+
+    # Step progress callback
+    step_cb = _make_step_cb()
+
+    sync_broadcast({
+        "type": "status",
+        "message": f"Generating I2V: {num_frames} frames...",
+    })
+
+    try:
+        frames = await asyncio.to_thread(
+            generate_video_chunked,
+            video_generator=vg,
+            positive_prompt=full_prompt,
+            negative_prompt=negative_prompt,
+            num_frames_total=num_frames,
+            num_inference_steps=int(steps),
+            guidance_scale=float(guidance_scale),
+            seed=actual_seed,
+            scheduler_name=scheduler,
+            progress_callback=lambda msg: sync_broadcast({"type": "progress", "message": msg}),
+            source_image=src,
+            vae_batch_frames=8,
+        )
+    except Exception as e:
+        sync_broadcast({"type": "error", "message": str(e)})
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    if frames is None or len(frames) == 0:
+        sync_broadcast({"type": "status", "message": "Generation stopped."})
+        return {"status": "interrupted", "seed": actual_seed}
+
+    # Export to temp MP4
+    if _last_i2v_path:
+        try:
+            Path(_last_i2v_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp.close()
+
+    if len(frames) > target_frames:
+        frames = frames[:target_frames]
+
+    sync_broadcast({"type": "status", "message": "Exporting video..."})
+    vg.export_video(frames, tmp.name, fps=fps)
+    _last_i2v_path = tmp.name
+
+    sync_broadcast({"type": "status", "message": f"Done. Seed: {actual_seed}"})
+    return {
+        "status": "ok",
+        "seed": actual_seed,
+        "num_frames": len(frames),
+        "video_url": f"/api/video/i2v/preview?t={int(datetime.now().timestamp())}",
+    }
+
+
+@app.get("/api/video/i2v/preview")
+async def api_i2v_preview():
+    if _last_i2v_path and Path(_last_i2v_path).exists():
+        return FileResponse(_last_i2v_path, media_type="video/mp4")
+    return JSONResponse({"error": "No video available"}, status_code=404)
+
+
+@app.post("/api/video/i2v/interrupt")
+async def api_i2v_interrupt():
+    if _active_video_arch == "CogVideoX":
+        vg = cogvideox_generator
+    else:
+        vg = wan_i2v_generator
+    if vg:
+        vg.interrupt()
+    return {"status": "Interrupt requested"}
+
+
+@app.post("/api/video/i2v/save")
+async def api_i2v_save():
+    path = _video_save_impl(_last_i2v_path, "i2v")
     if not path:
         return JSONResponse({"error": "No video to save"}, status_code=400)
     return {"status": "Saved", "path": path}

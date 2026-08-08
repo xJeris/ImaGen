@@ -1,6 +1,6 @@
 # ImaGen
 
-**Offline text-to-image, image-to-image & text-to-video generation.**
+**Offline text-to-image, image-to-image, ControlNet & text-to-video generation.**
 
 A fully self-contained AI image and video generator that runs entirely on your local machine — no internet connection required after initial setup. Built with Stable Diffusion (SDXL / SD 1.5), Pony, Illustrious, Flux, and Krea 2 for images, and WAN 2.1 + CogVideoX for video, with a custom FastAPI backend and vanilla HTML/CSS/JS frontend.
 
@@ -16,7 +16,9 @@ A fully self-contained AI image and video generator that runs entirely on your l
 - **Text to Image** — Generate images from text prompts using any supported architecture
 - **Image to Image** — Upload an image and transform it with text-guided diffusion
 - **Inpainting** — Paint a mask over part of an image and regenerate just that area
+- **ControlNet** — Guide image generation with structural control (edge maps, depth maps, poses, line art) using built-in preprocessors
 - **Text to Video** — Generate short video clips (1–5 seconds) using WAN 2.1 or CogVideoX models
+- **Image to Video** — Convert a still image into a video using WAN I2V or CogVideoX I2V
 - **Image Animation** — Animate a still image using AnimateDiff + SparseCtrl (SD 1.5)
 - **Weighted Prompts** — Fine-tune emphasis with `[green curtains:1.5]` syntax
 - **Dual LoRA Support** — Load up to two LoRA adapters simultaneously with independent weight controls; trigger words display automatically when available
@@ -33,6 +35,7 @@ A fully self-contained AI image and video generator that runs entirely on your l
 - **Hot-Swap Models** — Switch between models from the UI without restarting
 - **Fully Offline** — After first-run model download, everything runs locally
 - **Privacy & Security** — Content Security Policy headers, no analytics/telemetry/cookies, `Referrer-Policy: no-referrer`, CivitAI can be fully disabled for guaranteed zero network activity
+- **Prompt Token Counter** — Live token count badges on prompt textareas showing usage vs. model limits with color-coded warnings
 - **Real-Time Progress** — Visual progress bar during image generation showing diffusion step progress via WebSocket
 - **VRAM Management** — Automatic model offloading, VAE tiling, chunked VAE decode, 4-bit quantization for large video models
 
@@ -117,6 +120,33 @@ Weights above 1.0 increase emphasis, below 1.0 decrease it.
 #### Inpainting
 
 Select the **Inpainting** sub-tab in the bottom nav bar. Upload a source image, then paint a white mask over the area you want to regenerate using the brush tools. Only the masked area is changed — the rest of the image stays intact.
+
+### ControlNet
+
+ControlNet lets you guide image generation using structural control images (edges, depth, poses, etc.):
+
+1. Load a base model (any architecture except Krea 2)
+2. Select the **ControlNet** sub-tab in the bottom nav bar
+3. Choose a **ControlNet Model** from the dropdown (place models in `models/controlnet/`)
+4. Upload a source image
+5. Select a **Preprocessor** (Canny, Depth, OpenPose, Lineart, etc.) and click **Preview** to see the control signal
+6. Enter a prompt describing the desired output
+7. Adjust **Conditioning Scale** (0–2, default 1.0) to control ControlNet influence
+8. Click **Generate**
+
+The output follows the structure of the control image while rendering according to your prompt. Use "None (raw image)" as the preprocessor if your image is already a control map.
+
+### Image to Video
+
+Convert a still image into a video using WAN I2V or CogVideoX I2V:
+
+1. Select the **Image to Video** sub-tab in the Video Generator
+2. Upload a source image
+3. Enter a prompt describing the desired motion
+4. Set duration, FPS, and other video settings
+5. Click **Generate**
+
+**CogVideoX I2V** reuses the loaded T2V model (no extra download). **WAN I2V** requires a separate model placed in `models/wan_i2v/` (different transformer architecture + CLIP image encoder).
 
 ### Animate Image
 
@@ -226,18 +256,22 @@ LoRA files follow the same pattern (`loras/`, `loras/pony/`, `loras/illustrious/
 
 ### Video Models
 
-**WAN 2.1** — Download in diffusers format and place in `models/wan/`.
+**WAN 2.1 (T2V)** — Download in diffusers format and place in `models/wan/`.
 
 | Model | VRAM | Speed | Quality |
 |-------|------|-------|---------|
 | WAN 2.1 1.3B (Lite) | ~5GB | 1–2 minutes | Good for simple scenes |
 | WAN 2.1 14B (Full) | ~7GB (4-bit) | Slower | Higher quality, more detail |
 
-**CogVideoX** — Download in diffusers format and place in `models/cogvideox/`.
+**WAN 2.1 (I2V)** — Download in diffusers format and place in `models/wan_i2v/`. These use a different transformer architecture than T2V models and cannot be interchanged.
+
+**CogVideoX** — Download in diffusers format and place in `models/cogvideox/`. The same model works for both T2V and I2V.
 
 | Model | VRAM | Speed | Resolution |
 |-------|------|-------|------------|
 | CogVideoX-2b | ~5GB | ~2.5s/step | 720x480 |
+
+**ControlNet Models** — Place in `models/controlnet/` (`.safetensors` files or diffusers-format directories). ControlNet models are architecture-specific — ensure you use one compatible with your loaded base model (SDXL, SD 1.5, or Flux).
 
 Click the **Video Model** dropdown to refresh after adding models.
 
@@ -271,10 +305,11 @@ ImaGen/
 ├── pipeline.py             # Image generation pipeline (txt2img, img2img, inpainting)
 ├── flux_pipeline.py        # Flux image generation pipeline
 ├── krea2_pipeline.py       # Krea 2 image generation pipeline (12.9B DiT, Turbo/Raw)
-├── video_pipeline.py       # Video generation pipeline (WAN 2.1)
-├── cogvideox_pipeline.py   # CogVideoX video pipeline (fp16 diffusion + fp32 VAE decode)
+├── video_pipeline.py       # Video generation pipeline (WAN 2.1 T2V + I2V)
+├── cogvideox_pipeline.py   # CogVideoX video pipeline (T2V + I2V, fp16 diffusion + fp32 VAE decode)
 ├── video_chunker.py        # VRAM-safe video generation (chunked VAE decode)
 ├── animatediff_pipeline.py # Image animation pipeline (AnimateDiff + SparseCtrl)
+├── controlnet_pipeline.py  # ControlNet pipeline (borrows base model components)
 ├── civitai_browser.py      # CivitAI model search and download
 ├── upscaler.py             # AI upscaler inference (Spandrel)
 ├── prompt_parser.py        # Weighted prompt syntax parser
@@ -292,9 +327,11 @@ ImaGen/
 │   ├── flux/               # Flux architecture models
 │   ├── krea2/              # Krea 2 architecture models
 │   │   └── _encoders/      # Auto-cached text encoder + VAE (single-file loading)
-│   ├── wan/                # WAN 2.1 video models
-│   ├── cogvideox/          # CogVideoX video models
+│   ├── wan/                # WAN 2.1 T2V video models
+│   ├── wan_i2v/            # WAN 2.1 I2V video models
+│   ├── cogvideox/          # CogVideoX video models (T2V + I2V)
 │   ├── animatediff/        # AnimateDiff components (base model, motion adapter, SparseCtrl)
+│   ├── controlnet/         # ControlNet models (.safetensors or diffusers dirs)
 │   └── vaes/               # Custom VAE files (.safetensors or diffusers dirs)
 ├── upscalers/              # Upscaler model files
 ├── loras/                  # LoRA adapter files (per-architecture subdirectories)
@@ -344,6 +381,8 @@ The only network feature is the **Model Browser** (CivitAI search and download),
 | Krea 2 single-file: "text encoder not found" | Internet is needed on first load to download the text encoder + VAE (~9GB). These are cached in `models/krea2/_encoders/` for offline use afterward |
 | Krea 2: "FP8-scaled checkpoints..." error | FP8-scaled checkpoints (e.g. `_fp8_scaled` variants) use a quantization format incompatible with diffusers. Use a bf16 or non-scaled fp8 checkpoint instead |
 | Krea 2: "INT8-quantised checkpoints..." error | INT8 checkpoints use a quantization format incompatible with diffusers. Use a bf16 or fp8 checkpoint instead |
+| ControlNet tab is dimmed | ControlNet is not supported with Krea 2 — switch to any other architecture |
+| ControlNet preprocessor slow on first use | Preprocessor detector models (~100-300MB each) are downloaded from HuggingFace on first use and cached for future runs |
 | First run download fails | Internet is needed only once; delete `models/` and retry if interrupted |
 
 ## License

@@ -67,9 +67,18 @@ def _load_text_encoder(progress_callback=None):
             "(first time only, ~9 GB)..."
         )
     cache_dir.mkdir(parents=True, exist_ok=True)
-    model = Qwen3VLForConditionalGeneration.from_pretrained(
-        _TEXT_ENCODER_REPO, torch_dtype=torch.bfloat16,
-    )
+    try:
+        model = Qwen3VLForConditionalGeneration.from_pretrained(
+            _TEXT_ENCODER_REPO, torch_dtype=torch.bfloat16,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download the Qwen3-VL text encoder from '{_TEXT_ENCODER_REPO}': {e}\n\n"
+            f"The repository may be unavailable. You can manually provide the files by "
+            f"saving a Qwen3VLForConditionalGeneration model (Qwen3-VL-4B-Instruct) into:\n"
+            f"  {cache_dir}\n"
+            f"The folder should contain config.json and model safetensors files (~9 GB total)."
+        ) from e
     model.save_pretrained(str(cache_dir))
     return model
 
@@ -85,7 +94,17 @@ def _load_tokenizer(progress_callback=None):
     if progress_callback:
         progress_callback("Downloading Qwen3-VL tokenizer (first time only)...")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    tokenizer = AutoTokenizer.from_pretrained(_TEXT_ENCODER_REPO)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(_TEXT_ENCODER_REPO)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download the Qwen3-VL tokenizer from '{_TEXT_ENCODER_REPO}': {e}\n\n"
+            f"The repository may be unavailable. You can manually provide the files by "
+            f"saving an AutoTokenizer (Qwen3-VL-4B-Instruct) into:\n"
+            f"  {cache_dir}\n"
+            f"The folder should contain tokenizer_config.json, tokenizer.json, "
+            f"and special_tokens_map.json."
+        ) from e
     tokenizer.save_pretrained(str(cache_dir))
     return tokenizer
 
@@ -106,9 +125,18 @@ def _load_vae(progress_callback=None):
             "(first time only, ~254 MB)..."
         )
     cache_dir.mkdir(parents=True, exist_ok=True)
-    vae = AutoencoderKLQwenImage.from_pretrained(
-        _VAE_REPO, subfolder="vae", torch_dtype=torch.bfloat16,
-    )
+    try:
+        vae = AutoencoderKLQwenImage.from_pretrained(
+            _VAE_REPO, subfolder="vae", torch_dtype=torch.bfloat16,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download the Qwen-Image VAE from '{_VAE_REPO}': {e}\n\n"
+            f"The repository may be unavailable. You can manually provide the files by "
+            f"saving an AutoencoderKLQwenImage VAE (Qwen-Image) into:\n"
+            f"  {cache_dir}\n"
+            f"The folder should contain config.json and diffusion_pytorch_model.safetensors (~254 MB)."
+        ) from e
     vae.save_pretrained(str(cache_dir))
     return vae
 

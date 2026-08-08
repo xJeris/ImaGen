@@ -170,7 +170,7 @@ class VideoGenerator:
 
         else:
             # --- 14B FULL PATH (4-bit NF4 quantization) ---
-            # Quantize the transformer from ~28GB to ~7GB so it fits on a 4090.
+            # Quantize the transformer from ~28GB to ~7GB so it fits within 24GB VRAM.
             # Use enable_model_cpu_offload() so diffusers automatically moves each
             # component to GPU only when needed — the transformer gets offloaded
             # before VAE decode runs, freeing VRAM for decoding.
@@ -363,7 +363,7 @@ class VideoGenerator:
             generator = torch.Generator(device="cpu").manual_seed(seed)
 
         # --- RESOLUTION ---
-        # Use 480p for both models on a 4090 to keep VRAM usage safe.
+        # Use 480p for both models to keep VRAM within 24GB.
         # 14B *can* do 720p but the VAE decode often OOMs at 24GB.
         width, height = 832, 480
 

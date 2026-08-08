@@ -28,7 +28,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
 
 # CUDA performance: enable TF32 tensor cores and cuDNN autotuner.
-# TF32 uses the 4090's tensor cores for ~3-5x faster matmul/conv at fp32
+# TF32 uses NVIDIA tensor cores (Ampere+) for ~3-5x faster matmul/conv at fp32
 # with negligible precision loss. cuDNN benchmark auto-selects the fastest
 # kernel for each conv shape (small one-time cost on first run).
 if DEVICE == "cuda":

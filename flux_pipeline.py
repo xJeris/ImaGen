@@ -57,7 +57,16 @@ def _load_clip_encoder(progress_callback=None):
     if progress_callback:
         progress_callback(f"Downloading CLIP text encoder from {_CLIP_REPO} (first time only)...")
     clip_dir.mkdir(parents=True, exist_ok=True)
-    model = CLIPTextModel.from_pretrained(_CLIP_REPO, torch_dtype=config.DTYPE)
+    try:
+        model = CLIPTextModel.from_pretrained(_CLIP_REPO, torch_dtype=config.DTYPE)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download the CLIP text encoder from '{_CLIP_REPO}': {e}\n\n"
+            f"The repository may be unavailable. You can manually provide the files by "
+            f"saving a CLIPTextModel (clip-vit-large-patch14) into:\n"
+            f"  {clip_dir}\n"
+            f"The folder should contain config.json and model.safetensors (or pytorch_model.bin)."
+        ) from e
     model.save_pretrained(str(clip_dir))
     return model
 
@@ -73,7 +82,17 @@ def _load_clip_tokenizer(progress_callback=None):
     if progress_callback:
         progress_callback("Downloading CLIP tokenizer (first time only)...")
     tok_dir.mkdir(parents=True, exist_ok=True)
-    tokenizer = CLIPTokenizer.from_pretrained(_CLIP_REPO)
+    try:
+        tokenizer = CLIPTokenizer.from_pretrained(_CLIP_REPO)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download the CLIP tokenizer from '{_CLIP_REPO}': {e}\n\n"
+            f"The repository may be unavailable. You can manually provide the files by "
+            f"saving a CLIPTokenizer (clip-vit-large-patch14) into:\n"
+            f"  {tok_dir}\n"
+            f"The folder should contain tokenizer_config.json, vocab.json, merges.txt, "
+            f"and special_tokens_map.json."
+        ) from e
     tokenizer.save_pretrained(str(tok_dir))
     return tokenizer
 
@@ -89,7 +108,17 @@ def _load_t5_tokenizer(progress_callback=None):
     if progress_callback:
         progress_callback("Downloading T5 tokenizer (first time only)...")
     tok_dir.mkdir(parents=True, exist_ok=True)
-    tokenizer = AutoTokenizer.from_pretrained("google/t5-v1_1-xxl")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("google/t5-v1_1-xxl")
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download the T5 tokenizer from '{_T5_PRETRAINED_REPO}': {e}\n\n"
+            f"The repository may be unavailable. You can manually provide the files by "
+            f"saving a T5 tokenizer (t5-v1_1-xxl) into:\n"
+            f"  {tok_dir}\n"
+            f"The folder should contain tokenizer_config.json, spiece.model, "
+            f"and special_tokens_map.json."
+        ) from e
     tokenizer.save_pretrained(str(tok_dir))
     return tokenizer
 
@@ -113,11 +142,20 @@ def _load_t5_encoder(progress_callback=None):
         if progress_callback:
             progress_callback("Downloading T5-XXL text encoder fp8 (~4.9 GB, first time only)...")
         from huggingface_hub import hf_hub_download
-        hf_hub_download(
-            repo_id=_T5_REPO,
-            filename=_T5_FILENAME,
-            local_dir=str(t5_dir),
-        )
+        try:
+            hf_hub_download(
+                repo_id=_T5_REPO,
+                filename=_T5_FILENAME,
+                local_dir=str(t5_dir),
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to download the T5-XXL text encoder from '{_T5_REPO}': {e}\n\n"
+                f"The repository may be unavailable. You can manually provide the file by "
+                f"downloading '{_T5_FILENAME}' and placing it at:\n"
+                f"  {raw_file}\n"
+                f"This is a ~4.9 GB fp8 safetensors file of the T5-XXL encoder."
+            ) from e
         # Clean up .cache dir left by hf_hub_download
         _cache_dir = t5_dir / ".cache"
         if _cache_dir.exists():

@@ -12,16 +12,33 @@ const API = {
   /** Registered progress/status handlers */
   _handlers: [],
 
+  /** True after the server sends a shutdown message — suppresses reconnect */
+  _shuttingDown: false,
+
+  /** Consecutive reconnect failures (reset on successful open) */
+  _reconnectFails: 0,
+
   // ── WebSocket ─────────────────────────────────────────────
 
   connectWebSocket() {
+    if (this._shuttingDown) return;
+
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${proto}//${location.host}/ws/progress`;
     this.ws = new WebSocket(url);
 
+    this.ws.onopen = () => {
+      this._reconnectFails = 0;
+    };
+
     this.ws.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data);
+        if (data.type === 'shutdown') {
+          this._shuttingDown = true;
+          this._showShutdownScreen();
+          return;
+        }
         this._handlers.forEach(fn => fn(data));
       } catch (e) {
         console.error('WebSocket parse error:', e);
@@ -29,13 +46,33 @@ const API = {
     };
 
     this.ws.onclose = () => {
-      // Auto-reconnect after 2s
+      if (this._shuttingDown) return;
+      this._reconnectFails++;
+      // After 3 consecutive failures, the server is gone
+      if (this._reconnectFails >= 3) {
+        this._showShutdownScreen();
+        return;
+      }
       setTimeout(() => this.connectWebSocket(), 2000);
     };
 
     this.ws.onerror = () => {
       this.ws.close();
     };
+  },
+
+  _showShutdownScreen() {
+    document.title = 'ImaGen — Stopped';
+    document.body.innerHTML = '';
+    document.body.style.cssText =
+      'display:flex;align-items:center;justify-content:center;' +
+      'height:100vh;margin:0;background:#1a1a2e;color:#94a3b8;' +
+      'font-family:system-ui,sans-serif;text-align:center;';
+    const msg = document.createElement('div');
+    msg.innerHTML =
+      '<h1 style="color:#c88cff;font-size:24px;margin-bottom:12px;">ImaGen has stopped</h1>' +
+      '<p style="font-size:14px;">The server has been shut down.<br>This window can now be closed.</p>';
+    document.body.appendChild(msg);
   },
 
   /** Register a handler for WebSocket messages */

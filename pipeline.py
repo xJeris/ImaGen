@@ -174,10 +174,21 @@ class ImageGenerator:
                 if progress_callback:
                     progress_callback("Downloading model (first run, ~6.5GB)...")
                 model_dir.mkdir(parents=True, exist_ok=True)
-                pipe = StableDiffusionXLPipeline.from_pretrained(
-                    config.DEFAULT_MODEL_ID,
-                    torch_dtype=config.DTYPE,
-                )
+                try:
+                    pipe = StableDiffusionXLPipeline.from_pretrained(
+                        config.DEFAULT_MODEL_ID,
+                        torch_dtype=config.DTYPE,
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to download the default SDXL model from "
+                        f"'{config.DEFAULT_MODEL_ID}': {e}\n\n"
+                        f"The repository may be unavailable. You can manually provide "
+                        f"an SDXL or SD 1.5 model by placing a diffusers-format folder "
+                        f"or a .safetensors/.ckpt checkpoint file into:\n"
+                        f"  {model_dir}\n"
+                        f"Any SDXL or SD 1.5 compatible model will work."
+                    ) from e
                 if progress_callback:
                     progress_callback("Saving model to local cache...")
                 pipe.save_pretrained(str(default_path))

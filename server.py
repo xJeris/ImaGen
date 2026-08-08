@@ -80,7 +80,15 @@ PROMPTING_GUIDES = {
 
 # ── App ──────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="ImaGen", version="2.0")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
+    yield
+
+app = FastAPI(title="ImaGen", version="2.0", lifespan=lifespan)
 
 # ── Security headers middleware ───────────────────────────────────────────────
 
@@ -109,11 +117,6 @@ app.mount("/static", StaticFiles(directory=str(config.PROJECT_ROOT / "static")),
 # ── Global state ─────────────────────────────────────────────────────────────
 
 _main_loop: asyncio.AbstractEventLoop | None = None
-
-@app.on_event("startup")
-def _capture_event_loop():
-    global _main_loop
-    _main_loop = asyncio.get_running_loop()
 
 generators: dict = {"SDXL / SD 1.5": ImageGenerator()}
 _active_arch: str = "SDXL / SD 1.5"
@@ -499,7 +502,20 @@ async def ws_progress(ws: WebSocket):
 @app.get("/")
 async def serve_index():
     index_path = config.PROJECT_ROOT / "static" / "index.html"
-    return FileResponse(str(index_path), media_type="text/html")
+    html = index_path.read_text(encoding="utf-8")
+
+    # Inject cache-busting version query strings based on file modification times
+    _static = config.PROJECT_ROOT / "static"
+    for asset in ("css/style.css", "js/api.js", "js/app.js"):
+        asset_path = _static / asset
+        if asset_path.exists():
+            ver = int(asset_path.stat().st_mtime)
+            html = html.replace(
+                f"/static/{asset}",
+                f"/static/{asset}?v={ver}",
+            )
+
+    return HTMLResponse(html)
 
 
 # ── Status & Config endpoints ────────────────────────────────────────────────
@@ -1942,7 +1958,7 @@ async def api_profile_delete(name: str):
 
 @app.post("/api/shutdown")
 async def api_shutdown():
-    sync_broadcast({"type": "status", "message": "Shutting down..."})
+    sync_broadcast({"type": "shutdown"})
     # Schedule shutdown after response is sent
     asyncio.get_event_loop().call_later(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM))
     return {"status": "Shutting down..."}

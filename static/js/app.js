@@ -934,10 +934,11 @@ function showMessage(type, text, autoDismiss = null) {
     <div class="msg ${type}">
       <span class="msg-icon">${icons[type] || ''}</span>
       <span>${text}</span>
-      <button class="msg-close" onclick="dismissMessage()">&times;</button>
+      <button class="msg-close">&times;</button>
     </div>
   `;
   bar.classList.add('visible');
+  bar.querySelector('.msg-close').addEventListener('click', dismissMessage);
 
   if (_messageTimer) clearTimeout(_messageTimer);
 

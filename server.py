@@ -2275,6 +2275,8 @@ async def api_civitai_search(
         )
         return {"results": results, "next_cursor": next_cursor}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
